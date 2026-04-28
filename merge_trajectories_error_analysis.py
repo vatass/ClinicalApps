@@ -83,8 +83,8 @@ WONG = [
     "#000000",   # black
 ]
 
-METRIC     = "mean_abs_delta"
-METRIC_LBL = "Mean |Δ Predicted| (a.u.)"
+METRIC     = "mean_abs_delta"          # column name (= |z_pred − z_DLICV|)
+METRIC_LBL = "Prediction Error  |z-pred − z-DLICV|  (SD)"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -148,20 +148,47 @@ def _age_group(age: float) -> str:
 
 def build_error_table(merged: pd.DataFrame, cov: pd.DataFrame) -> pd.DataFrame:
     """
-    For every (subject, observed time-point) in the covariate file:
-      delta(T)         = pred(T) – pred(0)   for each of the 145 ROIs
-      mean_abs_delta   = mean |delta| across ROIs  (per-observation MAE proxy)
+    True prediction error at each observed time-point T:
+
+        error(T) = | z_pred(T)  −  z_DLICV(T) |
+
+    where both quantities are z-scored using the *baseline* (T=0) population
+    statistics so they are on the same scale:
+
+        z_pred(T)  = ( pred_mean(T)  − μ_pred0  ) / σ_pred0
+        z_DLICV(T) = ( DLICV(T)      − μ_DLICV0 ) / σ_DLICV0
+
+    pred_mean(T) = mean over 145 ROIs of the predicted trajectory at month T.
+    DLICV        = differential local intracranial volume (actual observed).
+    Baseline correlation pred_mean(0) ↔ DLICV(0):  r ≈ 0.877.
     """
     month_cols = [c for c in merged.columns if re.match(r"^Month_\d+$", c)]
     max_month  = max(int(c.split("_")[1]) for c in month_cols)
 
-    baseline  = (merged[["PTID", "ROI_Index", "Month_0"]]
-                 .rename(columns={"Month_0": "baseline_val"}))
-    merged_b  = merged.merge(baseline, on=["PTID", "ROI_Index"])
-
-    common    = set(merged["PTID"].unique()) & set(cov["PTID"].unique())
+    common = set(merged["PTID"].unique()) & set(cov["PTID"].unique())
     print(f"[error] Subjects in both files: {len(common)}")
 
+    # ── Baseline population statistics for z-scoring ──────────────────────────
+    # pred_mean at T=0: mean over all 145 ROIs per subject
+    pred_mean_0 = (
+        merged.groupby("PTID")["Month_0"].mean()
+        .reset_index().rename(columns={"Month_0": "pred_mean_0"})
+    )
+    mu_pred0  = pred_mean_0["pred_mean_0"].mean()
+    std_pred0 = pred_mean_0["pred_mean_0"].std()
+    print(f"[error] pred_mean baseline: μ={mu_pred0:.4f}, σ={std_pred0:.4f}")
+
+    # DLICV at T=0 per subject (earliest visit)
+    dlicv_0 = (
+        cov[cov["PTID"].isin(common)].sort_values("Time")
+        .groupby("PTID")["DLICV"].first()
+        .reset_index().rename(columns={"DLICV": "dlicv_0"})
+    )
+    mu_dlicv0  = dlicv_0["dlicv_0"].mean()
+    std_dlicv0 = dlicv_0["dlicv_0"].std()
+    print(f"[error] DLICV   baseline: μ={mu_dlicv0:.1f}, σ={std_dlicv0:.1f}")
+
+    # ── Build per-observation error ───────────────────────────────────────────
     cov_sub = cov[cov["PTID"].isin(common)].copy()
     cov_sub["Diagnosis"] = cov_sub["Diagnosis"].apply(_clean_diagnosis)
     cov_sub["Age_group"] = cov_sub["Age"].apply(_age_group)
@@ -170,30 +197,44 @@ def build_error_table(merged: pd.DataFrame, cov: pd.DataFrame) -> pd.DataFrame:
         {0.0: "ε3/ε3", 1.0: "1 ε4 allele", 2.0: "2 ε4 alleles", -1.0: "Unknown"}
     ).fillna("Unknown")
 
-    traj_by_ptid = {ptid: grp for ptid, grp in merged_b.groupby("PTID")}
-    records = []
+    # Pre-compute pred_mean per (PTID, month) — only the columns we need
+    traj_by_ptid = {}
+    for ptid, grp in merged.groupby("PTID"):
+        # store as dict {month_col: mean_value}
+        traj_by_ptid[ptid] = {
+            col: grp[col].mean() for col in month_cols
+        }
 
+    records = []
     for _, row in cov_sub.iterrows():
         ptid = row["PTID"]
         t    = int(row["Time"])
-        if t > max_month or ptid not in traj_by_ptid:
+        dlicv_obs = row["DLICV"]
+
+        if (t > max_month or ptid not in traj_by_ptid
+                or pd.isna(dlicv_obs)):
             continue
         month_col = f"Month_{t}"
-        if month_col not in merged_b.columns:
+        if month_col not in traj_by_ptid[ptid]:
             continue
 
-        grp           = traj_by_ptid[ptid]
-        pred_vals     = grp[month_col].values
-        baseline_vals = grp["baseline_val"].values
-        delta         = pred_vals - baseline_vals
+        pred_mean_T = traj_by_ptid[ptid][month_col]
+
+        # Z-score using baseline population statistics
+        z_pred  = (pred_mean_T - mu_pred0)  / std_pred0
+        z_dlicv = (dlicv_obs   - mu_dlicv0) / std_dlicv0
+
+        # True prediction error (in SD units, scale-free)
+        pred_error  = z_pred - z_dlicv          # signed
+        abs_error   = abs(pred_error)
 
         records.append({
             "PTID":           ptid,
             "Time":           t,
-            "mean_pred":      pred_vals.mean(),
-            "mean_delta":     delta.mean(),
-            "mean_abs_delta": np.abs(delta).mean(),
-            "std_delta":      delta.std(),
+            "z_pred":         z_pred,
+            "z_dlicv":        z_dlicv,
+            "pred_error":     pred_error,        # signed: + means over-prediction
+            "mean_abs_delta": abs_error,         # keep same column name for plots
             "Diagnosis":      row["Diagnosis"],
             "Sex":            row["Sex"],
             "APOE4":          row["APOE4"],
@@ -266,9 +307,11 @@ def report_mae_ci(error_df: pd.DataFrame) -> pd.DataFrame:
 
     width = 72
     print("\n" + "=" * width)
-    print("PREDICTION MAE — MEAN ± 95 % CI (t-distribution)")
-    print(f"  Metric : mean |Δ predicted| from baseline across 145 ROIs")
-    print(f"  CI     : 95 % confidence interval on the mean")
+    print("PREDICTION ERROR MAE — MEAN ± 95 % CI (t-distribution)")
+    print(f"  Metric : |z_pred(T) − z_DLICV(T)|  (SD units)")
+    print(f"           pred_mean(T) = mean over 145 ROIs of trajectory at month T")
+    print(f"           both z-scored using baseline (T=0) population μ and σ")
+    print(f"  CI     : 95 % confidence interval on the mean (t-distribution)")
     print("=" * width)
     print(f"  {'Stratum':<12} {'Group':<22} {'N':>6}  {'Mean MAE':>10}  "
           f"{'95 % CI':>22}")
@@ -591,6 +634,52 @@ def plot_violin_diagnosis(error_df: pd.DataFrame) -> None:
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
+def plot_signed_error_vs_time(error_df: pd.DataFrame) -> None:
+    """
+    Signed prediction error vs Time (bias plot).
+    Positive = model over-predicts brain volume (z_pred > z_DLICV).
+    Negative = model under-predicts.
+    Stratified by Diagnosis.
+    """
+    order = ["CN", "MCI", "AD", "Other"]
+    df    = _bin_time(error_df.dropna(subset=["pred_error"]), bin_width=12)
+
+    fig, ax = plt.subplots(figsize=(SINGLE_COL * 1.18, FIG_HEIGHT),
+                           constrained_layout=True)
+
+    for i, grp in enumerate(order):
+        sub = df[df["Diagnosis"] == grp]
+
+        def _ci_signed(x):
+            m, lo, hi = _mean_ci(x.dropna().values)
+            return pd.Series({"mean": m, "ci_h": (hi - lo) / 2})
+
+        agg = (sub.groupby("Time_bin")["pred_error"]
+               .apply(_ci_signed)
+               .reset_index()
+               .pivot(index="Time_bin", columns="level_1", values="pred_error")
+               .reset_index()
+               .rename(columns={"Time_bin": "Time_bin"}))
+        if agg.empty:
+            continue
+        c = WONG[i % len(WONG)]
+        ax.plot(agg["Time_bin"], agg["mean"], color=c, linewidth=1.5,
+                marker="o", markersize=2.5, label=grp, zorder=3)
+        ax.fill_between(agg["Time_bin"],
+                        agg["mean"] - agg["ci_h"],
+                        agg["mean"] + agg["ci_h"],
+                        alpha=0.13, color=c, zorder=2)
+
+    ax.axhline(0, color="#888888", linewidth=0.8, linestyle="--", zorder=1)
+    ax.set_xlabel("Time (months)")
+    ax.set_ylabel("Signed Error  z-pred − z-DLICV  (SD)")
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(24))
+    ax.legend(title="Diagnosis", framealpha=0.85, handlelength=1.4,
+              borderpad=0.4, labelspacing=0.25)
+
+    _save(fig, "fig6_signed_error_vs_time_diagnosis")
+
+
 def main() -> None:
     print("=" * 70)
     print("STEP 1 — Merging predicted trajectories")
@@ -621,6 +710,7 @@ def main() -> None:
     plot_line_per_covariate(error_df)
     plot_heatmap_overview(error_df)
     plot_violin_diagnosis(error_df)
+    plot_signed_error_vs_time(error_df)
 
     print("\n" + "=" * 70)
     print("DONE — all outputs in", OUT_DIR)
