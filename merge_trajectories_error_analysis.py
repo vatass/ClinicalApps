@@ -617,7 +617,7 @@ def plot_heatmap_overview(error_df: pd.DataFrame) -> None:
         if order:
             pivot = pivot.reindex([r for r in order if r in pivot.index])
 
-        annot = pivot.map(lambda v: f"{v:.3f}" if pd.notna(v) else "")
+        annot = pivot.applymap(lambda v: f"{v:.3f}" if pd.notna(v) else "")
 
         sns.heatmap(pivot, cmap="YlOrRd", annot=annot, fmt="",
                     linewidths=0.3, linecolor="#dddddd",
