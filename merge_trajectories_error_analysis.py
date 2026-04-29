@@ -30,6 +30,7 @@ Outputs
 import os
 import re
 import warnings
+from typing import Optional, List
 
 import matplotlib
 matplotlib.use("Agg")
@@ -322,7 +323,7 @@ def report_mae_ci(error_df: pd.DataFrame) -> pd.DataFrame:
 # 4. VISUALISATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _agg_time(df: pd.DataFrame, group_col: str | None = None,
+def _agg_time(df: pd.DataFrame, group_col: Optional[str] = None,
               group_val=None, metric: str = METRIC) -> pd.DataFrame:
     """
     Aggregate metric by Month → (mean, 95 % CI half-width).
