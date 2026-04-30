@@ -178,8 +178,8 @@ def build_comparison_table(
     Columns: Fold 0-4, Mean MAE, 95 % CI lower/upper.
     """
     rows = []
-    for method, fold_dict in [("DKGP (ours)", dkgp_maes),
-                               ("MLP",         mlp_maes),
+    for method, fold_dict in [("BrainGenFlow (ours)", dkgp_maes),
+                               ("Deep Regression",         mlp_maes),
                                ("RNN-AD",      rnn_maes)]:
         fold_vals = np.array([fold_dict[k] for k in range(N_FOLDS)])
         mean, lo, hi = mean_ci(fold_vals)
