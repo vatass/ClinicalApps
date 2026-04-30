@@ -291,8 +291,16 @@ def save_baseline_predictions(model: str) -> None:
             for subj in test_subjects:
                 n_visits = len(ptid_time_map.get(str(subj), []))
                 ptid_list.extend([str(subj)] * max(n_visits, 1))
-            # Trim or pad to match actual array length
-            ptid_list = ptid_list[:len(preds)]
+            # Trim or pad to match actual array length.
+            # The covariate file may not cover every visit in the RNN predictions
+            # (e.g. subjects with extra timepoints not in the covariate CSV).
+            if len(ptid_list) > len(preds):
+                ptid_list = ptid_list[:len(preds)]
+            elif len(ptid_list) < len(preds):
+                n_missing = len(preds) - len(ptid_list)
+                print(f"  [RNN] fold {fold}: covariate file has {len(ptid_list)} rows "
+                      f"but predictions array has {len(preds)} — padding {n_missing} rows with NaN.")
+                ptid_list = ptid_list + [""] * n_missing
         else:
             with open(ptid_file) as f:
                 ptid_list = json.load(f)
