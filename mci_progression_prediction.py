@@ -68,17 +68,19 @@ DKGP_CLASSIFIER = 'Logistic Regression'  # best  for DKGP    (AUC = 0.791 ± 0.0
 FIXED_CLASSIFIER = 'Random Forest'       # used for real upper bound ONLY
 
 
-RNN_CLASSIFIER  = 'Random Forest'    # worst for RNN-AD  (AUC = 0.767 ± 0.040)
-DKGP_CLASSIFIER = 'Random Forest'  # best  for DKGP    (AUC = 0.791 ± 0.022)
-FIXED_CLASSIFIER = 'Random Forest'       # used for real upper bound ONLY
+RNN_CLASSIFIER       = 'Random Forest'    # worst for RNN-AD  (AUC = 0.767 ± 0.040)
+DKGP_CLASSIFIER      = 'Random Forest'   # best  for DKGP    (AUC = 0.791 ± 0.022)
+FIXED_CLASSIFIER     = 'Random Forest'   # used for real upper bound ONLY
+BRAINGEN_CLASSIFIER  = 'Random Forest'   # BrainGenFlow predicted trajectories
 
 
 
 def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_results,
-                                   real_results, save_prefix='comprehensive_comparison'):
+                                   real_results, save_prefix='comprehensive_comparison',
+                                   braingen_pred_results=None):
     """
-    Create publication-quality 4-curve ROC figure for Results section.
-    Shows: Baseline [GBM], RNN-AD [GBM worst], DKGP [LR best], Real UB [RF].
+    Create publication-quality ROC figure for Results section.
+    Shows: Baseline, RNN-AD, DKGP, BrainGenFlow (when provided), Real UB.
     Clean design: no grid, despined axes, AUC ± std in legend.
     """
     sns.set(style="white", context="talk")
@@ -86,10 +88,11 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
 
     # Ordered from bottom to top visually; colors chosen for accessibility
     methods = [
-        ('Baseline volumes',          baseline_results,    RNN_CLASSIFIER, '#9B59B6', (5, 2),     1.8),
-        ('RNN-AD predicted',          rnn_pred_results,    RNN_CLASSIFIER,    '#E74C3C', (4, 2, 1, 2), 2.0),
-        ('DKGP predicted (ours)',     dkgp_pred_results,   DKGP_CLASSIFIER,   '#1A5276', 'solid',      2.5),
-        ('Real trajectories (upper bound)', real_results,  FIXED_CLASSIFIER,  '#7F8C8D', (2, 2),       1.8),
+        ('Baseline volumes',                baseline_results,      RNN_CLASSIFIER,       '#9B59B6', (5, 2),       1.8),
+        ('RNN-AD predicted',                rnn_pred_results,      RNN_CLASSIFIER,       '#E74C3C', (4, 2, 1, 2), 2.0),
+        ('DKGP predicted',                  dkgp_pred_results,     DKGP_CLASSIFIER,      '#1A5276', (3, 1, 1, 1), 2.0),
+        ('BrainGenFlow predicted (ours)',   braingen_pred_results, BRAINGEN_CLASSIFIER,  '#1A9C6E', 'solid',       2.5),
+        ('Real trajectories (upper bound)', real_results,          FIXED_CLASSIFIER,     '#7F8C8D', (2, 2),        1.8),
     ]
 
     for label, results, clf, color, dashes, lw in methods:
@@ -119,7 +122,7 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
     for label in ax.get_xticklabels() + ax.get_yticklabels():
         label.set_fontweight('normal')
 
-    # Clean legend — lower right, no frame, note asymmetric classifier choice
+    # Clean legend — lower right
     legend = ax.legend(
         title='n = 882 MCI subjects',
         title_fontsize=10,
@@ -133,11 +136,11 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
     )
     legend.get_title().set_color('#555555')
 
-    # Footnote below legend about asymmetric design
     ax.annotate(
-        f'RNN-AD: {RNN_CLASSIFIER} (worst) | DKGP: {DKGP_CLASSIFIER} (best)',
+        f'RNN-AD: {RNN_CLASSIFIER} | DKGP: {DKGP_CLASSIFIER} | '
+        f'BrainGenFlow: {BRAINGEN_CLASSIFIER} | Real UB: {FIXED_CLASSIFIER}',
         xy=(0.99, 0.01), xycoords='axes fraction',
-        fontsize=8, color='#888888',
+        fontsize=7, color='#888888',
         ha='right', va='bottom', style='italic'
     )
 
@@ -146,6 +149,7 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
     ax.spines['bottom'].set_linewidth(1.2)
 
     plt.tight_layout()
+    os.makedirs('./miccai26', exist_ok=True)
     plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.png',
                 dpi=600, bbox_inches='tight')
     plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.pdf',
@@ -153,9 +157,10 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
     plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.svg',
                 bbox_inches='tight')
     plt.close()
-    print(f"✓ ROC curves saved — all four conditions "
-          f"(Baseline [GBM] | RNN-AD [{RNN_CLASSIFIER}] | "
-          f"DKGP [{DKGP_CLASSIFIER}] | Real UB [{FIXED_CLASSIFIER}])")
+    braingen_note = f' | BrainGenFlow [{BRAINGEN_CLASSIFIER}]' if braingen_pred_results else ''
+    print(f"✓ ROC curves saved — conditions: "
+          f"Baseline [{RNN_CLASSIFIER}] | RNN-AD [{RNN_CLASSIFIER}] | "
+          f"DKGP [{DKGP_CLASSIFIER}]{braingen_note} | Real UB [{FIXED_CLASSIFIER}]")
 
 
 
@@ -180,6 +185,79 @@ def load_baseline_volumes():
     except Exception as e:
         print(f"Error loading baseline volumes: {e}")
         return None
+
+
+def load_braingen_predictions(predictions_dir='./predictions'):
+    """
+    Load BrainGenFlow trajectory predictions and compute per-ROI OLS slopes.
+
+    Each CSV file in predictions_dir is named trajectory_<subject_id>_fold<N>.csv
+    and contains 145 ROI pairs of rows:
+        <roi>_real  — sparse observed volumes at actual visit months (NaN elsewhere)
+        <roi>_gen   — dense generated trajectory across all 70 months
+
+    Returns a DataFrame with columns matching the RNN-AD / DKGP RoC format:
+        subject_id, roi, real_slope, pred_slope, num_timepoints,
+        time_range, real_initial_value, pred_initial_value, model
+    """
+    import re
+    from pathlib import Path
+
+    predictions_dir = Path(predictions_dir)
+    months     = np.arange(70)
+    time_years = months / 12.0
+
+    def _ols_slope(t, v):
+        if len(t) < 2:
+            return np.nan
+        return float(np.polyfit(t, v, 1)[0])
+
+    csv_files = sorted(predictions_dir.glob('trajectory_*_fold*.csv'))
+    print(f"  Found {len(csv_files)} BrainGenFlow trajectory files in '{predictions_dir}'")
+
+    all_records = []
+    for fpath in csv_files:
+        m = re.match(r'trajectory_(.+)_fold\d+\.csv', fpath.name)
+        if not m:
+            continue
+        subject_id = m.group(1)
+
+        traj_df = pd.read_csv(fpath, index_col=0)
+
+        for roi_idx in range(145):
+            real_key = f'{roi_idx}_real'
+            gen_key  = f'{roi_idx}_gen'
+
+            if real_key not in traj_df.index or gen_key not in traj_df.index:
+                continue
+
+            real_vals = traj_df.loc[real_key].values.astype(float)
+            gen_vals  = traj_df.loc[gen_key].values.astype(float)
+
+            real_mask = ~np.isnan(real_vals)
+            gen_mask  = ~np.isnan(gen_vals)
+
+            real_t = time_years[real_mask]
+            real_v = real_vals[real_mask]
+            gen_t  = time_years[gen_mask]
+            gen_v  = gen_vals[gen_mask]
+
+            all_records.append({
+                'subject_id':         subject_id,
+                'roi':                roi_idx,
+                'real_slope':         _ols_slope(real_t, real_v),
+                'pred_slope':         _ols_slope(gen_t, gen_v),
+                'num_timepoints':     int(real_mask.sum()),
+                'time_range':         float(real_t.max() - real_t.min()) if real_mask.sum() >= 2 else np.nan,
+                'real_initial_value': float(real_v[0]) if len(real_v) > 0 else np.nan,
+                'pred_initial_value': float(gen_v[0]) if len(gen_v) > 0 else np.nan,
+                'model':              'BrainGenFlow'
+            })
+
+    braingen_df = pd.DataFrame(all_records)
+    n_subjects  = braingen_df['subject_id'].nunique() if len(braingen_df) > 0 else 0
+    print(f"  BrainGenFlow RoC: {len(all_records):,} measurements, {n_subjects} subjects")
+    return braingen_df
 
 
 def perform_false_discovery_analysis(y_true, y_pred, y_prob, alpha=0.05):
@@ -506,36 +584,28 @@ def compute_95ci(fold_aucs):
 
 def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
                                     real_results,
+                                    braingen_results=None,
                                     alpha=0.05):
     """
-    Statistical comparison across all four feature sets using DeLong's test
-    on pooled CV predictions (n ≈ 882).
+    Statistical comparison across feature sets using DeLong's test on pooled CV
+    predictions (n ≈ 882).
 
-    Three pairwise comparisons are run:
-      1. DKGP predicted   vs. Baseline volumes  (primary claim)
-      2. RNN-AD predicted vs. Baseline volumes  (secondary claim)
-      3. DKGP predicted   vs. RNN-AD predicted  (head-to-head)
-
-    All comparisons use the same classifier applied symmetrically, guaranteeing
-    that differences in AUC reflect trajectory quality rather than classifier choice.
+    Pairwise comparisons (symmetrically applied classifier):
+      1. BrainGenFlow predicted vs. Baseline volumes  (primary claim)
+      2. BrainGenFlow predicted vs. RNN-AD predicted  (head-to-head)
+      3. BrainGenFlow predicted vs. DKGP predicted    (head-to-head)
+      4. DKGP predicted         vs. Baseline volumes
+      5. RNN-AD predicted       vs. Baseline volumes
+      6. DKGP predicted         vs. RNN-AD predicted
 
     DeLong's test requires row-level alignment of pooled prediction vectors —
-    i.e., the same subjects appearing in the same order across all feature sets.
-    This is enforced by the assertion below.
-
-    Parameters
-    ----------
-    baseline_results : dict  — output of evaluate_features for baseline volumes
-    rnn_results      : dict  — output of evaluate_features for RNN-AD predicted slopes
-    dkgp_results     : dict  — output of evaluate_features for DKGP predicted slopes
-    real_results     : dict  — output of evaluate_features for real trajectory slopes
-    classifier       : str   — must be the same classifier used across all feature sets
-    alpha            : float — significance threshold
+    guaranteed by StratifiedKFold(random_state=42) and canonical subject ordering.
     """
     print("\n" + "="*80)
     print("DELONG'S TEST — ALL PAIRWISE COMPARISONS")
     print(f"Classifier : {DKGP_CLASSIFIER} (applied symmetrically to all feature sets)")
-    print(f"n          ≈ {len(dkgp_results[DKGP_CLASSIFIER]['all_y_true'])} subjects (pooled CV)")
+    ref_n = len(dkgp_results[DKGP_CLASSIFIER]['all_y_true'])
+    print(f"n          ≈ {ref_n} subjects (pooled CV)")
     print("="*80)
 
     # ── Extract pooled prediction vectors ─────────────────────────────────────
@@ -548,9 +618,6 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
     y_prob_dkgp = dkgp_results[DKGP_CLASSIFIER]['all_y_prob']
 
     # ── Alignment assertion ───────────────────────────────────────────────────
-    # DeLong's test is only valid when all y_true vectors are identical —
-    # i.e., the same subjects appeared in the same held-out test sets
-    # across all three evaluate_features calls (guaranteed by random_state=42).
     assert np.array_equal(y_true_base, y_true_rnn) and \
            np.array_equal(y_true_rnn,  y_true_dkgp), \
         "y_true vectors differ across feature sets — CV splits are misaligned. " \
@@ -558,6 +625,14 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
         "subjects in the same order."
 
     y_true = y_true_dkgp   # all identical; use any one
+
+    # ── BrainGenFlow predictions (optional) ──────────────────────────────────
+    y_prob_braingen = None
+    if braingen_results is not None:
+        y_true_braingen = braingen_results[BRAINGEN_CLASSIFIER]['all_y_true']
+        assert np.array_equal(y_true_dkgp, y_true_braingen), \
+            "y_true vectors differ: BrainGenFlow vs DKGP — subject ordering misaligned."
+        y_prob_braingen = braingen_results[BRAINGEN_CLASSIFIER]['all_y_prob']
 
     # ── AUC summary ──────────────────────────────────────────────────────────
     auc_base = baseline_results[FIXED_CLASSIFIER]['roc_auc']
@@ -573,19 +648,19 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
     # ── AUC summary with 95% CI ───────────────────────────────────────────────
     print(f"\n  AUC Summary (mean [95% CI] across 5 folds):")
 
-    for label, results, classifier in [
-        ("Real upper bound", real_results, FIXED_CLASSIFIER),
-        ("DKGP predicted",   dkgp_results, DKGP_CLASSIFIER),
-        ("RNN-AD predicted", rnn_results, RNN_CLASSIFIER),
-        ("Baseline volumes", baseline_results, FIXED_CLASSIFIER),
-    ]:
+    summary_rows = [
+        ("Real upper bound",        real_results,      FIXED_CLASSIFIER),
+        ("BrainGenFlow predicted",  braingen_results,  BRAINGEN_CLASSIFIER),
+        ("DKGP predicted",          dkgp_results,      DKGP_CLASSIFIER),
+        ("RNN-AD predicted",        rnn_results,       RNN_CLASSIFIER),
+        ("Baseline volumes",        baseline_results,  FIXED_CLASSIFIER),
+    ]
+    for label, results, classifier in summary_rows:
         if results is None:
             continue
         fold_aucs          = results[classifier]['fold_aucs']
         mean, lower, upper = compute_95ci(fold_aucs)
-        print(f"    {label:<22}: {mean:.4f} [95% CI: {lower:.4f}, {upper:.4f}]")
-
-
+        print(f"    {label:<28}: {mean:.4f} [95% CI: {lower:.4f}, {upper:.4f}]")
 
     # ── Pairwise DeLong tests ─────────────────────────────────────────────────
     comparisons = [
@@ -593,6 +668,15 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
         ("RNN-AD predicted", "Baseline volumes",  y_prob_rnn,  y_prob_base),
         ("DKGP predicted",   "RNN-AD predicted",  y_prob_dkgp, y_prob_rnn),
     ]
+    if y_prob_braingen is not None:
+        comparisons = [
+            ("BrainGenFlow predicted", "Baseline volumes",  y_prob_braingen, y_prob_base),
+            ("BrainGenFlow predicted", "RNN-AD predicted",  y_prob_braingen, y_prob_rnn),
+            ("BrainGenFlow predicted", "DKGP predicted",    y_prob_braingen, y_prob_dkgp),
+            ("DKGP predicted",         "Baseline volumes",  y_prob_dkgp,     y_prob_base),
+            ("RNN-AD predicted",       "Baseline volumes",  y_prob_rnn,      y_prob_base),
+            ("DKGP predicted",         "RNN-AD predicted",  y_prob_dkgp,     y_prob_rnn),
+        ]
 
     delong_results = {}
     for name_a, name_b, prob_a, prob_b in comparisons:
@@ -605,12 +689,12 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
         delong_results[key] = res
 
         delta = res['auc_a'] - res['auc_b']
-        print(f"  AUC ({name_a:<22}): {res['auc_a']:.4f}")
-        print(f"  AUC ({name_b:<22}): {res['auc_b']:.4f}")
-        print(f"  ΔAUC                      : {delta:+.4f}")
-        print(f"  z-statistic               : {res['z_stat']:.3f}")
-        print(f"  p-value                   : {res['p_value']:.4e}")
-        print(f"  Significant (α = {alpha})  : {'✓ Yes' if res['significant'] else '✗ No'}")
+        print(f"  AUC ({name_a:<28}): {res['auc_a']:.4f}")
+        print(f"  AUC ({name_b:<28}): {res['auc_b']:.4f}")
+        print(f"  ΔAUC                          : {delta:+.4f}")
+        print(f"  z-statistic                   : {res['z_stat']:.3f}")
+        print(f"  p-value                       : {res['p_value']:.4e}")
+        print(f"  Significant (α = {alpha})      : {'✓ Yes' if res['significant'] else '✗ No'}")
         if 'note' in res:
             print(f"  Note: {res['note']}")
 
@@ -618,13 +702,13 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
     print(f"\n{'─'*60}")
     print("SUMMARY TABLE")
     print(f"{'─'*60}")
-    header = f"  {'Comparison':<40} {'ΔAUC':>8}  {'z':>7}  {'p':>12}  {'Sig':>5}"
+    header = f"  {'Comparison':<46} {'ΔAUC':>8}  {'z':>7}  {'p':>12}  {'Sig':>5}"
     print(header)
     print("  " + "-" * (len(header) - 2))
     for key, res in delong_results.items():
         delta = res['auc_a'] - res['auc_b']
         sig   = '✓' if res['significant'] else '✗'
-        print(f"  {key:<40} {delta:>+8.4f}  {res['z_stat']:>7.3f}  "
+        print(f"  {key:<46} {delta:>+8.4f}  {res['z_stat']:>7.3f}  "
               f"{res['p_value']:>12.4e}  {sig:>5}")
 
     # ── Manuscript-ready conclusion ───────────────────────────────────────────
@@ -632,25 +716,30 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
     print("MANUSCRIPT CONCLUSION")
     print(f"{'─'*60}")
 
-    dkgp_vs_base = delong_results["DKGP predicted vs Baseline volumes"]
-    rnn_vs_base  = delong_results["RNN-AD predicted vs Baseline volumes"]
-    dkgp_vs_rnn  = delong_results["DKGP predicted vs RNN-AD predicted"]
+    conclusion_pairs = []
+    if y_prob_braingen is not None:
+        conclusion_pairs += [
+            ("BrainGenFlow vs Baseline", delong_results["BrainGenFlow predicted vs Baseline volumes"], "BrainGenFlow", "Baseline"),
+            ("BrainGenFlow vs RNN-AD",   delong_results["BrainGenFlow predicted vs RNN-AD predicted"], "BrainGenFlow", "RNN-AD"),
+            ("BrainGenFlow vs DKGP",     delong_results["BrainGenFlow predicted vs DKGP predicted"],   "BrainGenFlow", "DKGP"),
+        ]
+    conclusion_pairs += [
+        ("DKGP vs Baseline", delong_results["DKGP predicted vs Baseline volumes"],  "DKGP",   "Baseline"),
+        ("RNN vs Baseline",  delong_results["RNN-AD predicted vs Baseline volumes"], "RNN-AD", "Baseline"),
+        ("DKGP vs RNN-AD",   delong_results["DKGP predicted vs RNN-AD predicted"],  "DKGP",   "RNN-AD"),
+    ]
 
-    for label, res, name_a, name_b in [
-        ("DKGP vs Baseline", dkgp_vs_base, "DKGP",   "Baseline"),
-        ("RNN vs Baseline",  rnn_vs_base,  "RNN-AD",  "Baseline"),
-        ("DKGP vs RNN-AD",   dkgp_vs_rnn,  "DKGP",   "RNN-AD"),
-    ]:
+    for label, res, name_a, name_b in conclusion_pairs:
         sig_str = "significantly outperforms" if res['significant'] else \
                   "does not significantly outperform"
         print(f"  {label}: {name_a} {sig_str} {name_b} "
               f"(ΔAUC = {res['auc_a'] - res['auc_b']:+.4f}, "
               f"z = {res['z_stat']:.3f}, p = {res['p_value']:.4e})")
 
-    return {
-        'delong_dkgp_vs_baseline': dkgp_vs_base,
-        'delong_rnn_vs_baseline':  rnn_vs_base,
-        'delong_dkgp_vs_rnn':      dkgp_vs_rnn,
+    out = {
+        'delong_dkgp_vs_baseline': delong_results["DKGP predicted vs Baseline volumes"],
+        'delong_rnn_vs_baseline':  delong_results["RNN-AD predicted vs Baseline volumes"],
+        'delong_dkgp_vs_rnn':      delong_results["DKGP predicted vs RNN-AD predicted"],
         'auc_summary': {
             'baseline': (auc_base, std_base),
             'rnn':      (auc_rnn,  std_rnn),
@@ -658,6 +747,13 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
             'real':     (auc_real, std_real),
         }
     }
+    if y_prob_braingen is not None:
+        out['delong_braingen_vs_baseline'] = delong_results["BrainGenFlow predicted vs Baseline volumes"]
+        out['delong_braingen_vs_rnn']      = delong_results["BrainGenFlow predicted vs RNN-AD predicted"]
+        out['delong_braingen_vs_dkgp']     = delong_results["BrainGenFlow predicted vs DKGP predicted"]
+        out['auc_summary']['braingen']     = (braingen_results[BRAINGEN_CLASSIFIER]['roc_auc'],
+                                               braingen_results[BRAINGEN_CLASSIFIER]['roc_auc_std'])
+    return out
 
 def analyze_slope_quality(rate_of_change_df):
     """Analyze the quality of predicted slopes compared to real slopes."""
@@ -784,19 +880,23 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
             print("="*80)
 
             # ── Separate by model ────────────────────────────────────────────
-            rnn_data  = rate_of_change_df[rate_of_change_df['model'] == 'RNN-AD']
-            dkgp_data = rate_of_change_df[rate_of_change_df['model'] == 'DKGP']
-            dkgp_data = dkgp_data.dropna(subset=['real_slope', 'pred_slope'])
+            rnn_data       = rate_of_change_df[rate_of_change_df['model'] == 'RNN-AD']
+            dkgp_data      = rate_of_change_df[rate_of_change_df['model'] == 'DKGP']
+            braingen_data  = rate_of_change_df[rate_of_change_df['model'] == 'BrainGenFlow']
+            dkgp_data      = dkgp_data.dropna(subset=['real_slope', 'pred_slope'])
+            braingen_data  = braingen_data.dropna(subset=['real_slope', 'pred_slope'])
 
             # ── ROI coverage check ───────────────────────────────────────────
-            dkgp_roi_counts = dkgp_data.groupby('subject_id')['roi'].nunique()
-            rnn_roi_counts  = rnn_data.groupby('subject_id')['roi'].nunique()
+            dkgp_roi_counts      = dkgp_data.groupby('subject_id')['roi'].nunique()
+            rnn_roi_counts       = rnn_data.groupby('subject_id')['roi'].nunique()
+            braingen_roi_counts  = braingen_data.groupby('subject_id')['roi'].nunique()
             print(f"DKGP subjects with < 145 ROIs: {(dkgp_roi_counts < 145).sum()}")
             print(f"RNN-AD subjects with < 145 ROIs: {(rnn_roi_counts < 145).sum()}")
+            print(f"BrainGenFlow subjects with < 145 ROIs: {(braingen_roi_counts < 145).sum()}")
             print(f"DKGP ROI count distribution:\n{dkgp_roi_counts.value_counts().sort_index()}")
 
             # ── NaN check ────────────────────────────────────────────────────
-            for label, df in [('RNN-AD', rnn_data), ('DKGP', dkgp_data)]:
+            for label, df in [('RNN-AD', rnn_data), ('DKGP', dkgp_data), ('BrainGenFlow', braingen_data)]:
                 n_nan_real  = df['real_slope'].isna().sum()
                 n_nan_pred  = df['pred_slope'].isna().sum()
                 n_subj_real = df[df['real_slope'].isna()]['subject_id'].nunique()
@@ -809,6 +909,7 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
 
             print(f"\nRNN-AD data: {len(rnn_data)} rows")
             print(f"DKGP data: {len(dkgp_data)} rows")
+            print(f"BrainGenFlow data: {len(braingen_data)} rows")
             print(f"Number of ROIs: {len(rate_of_change_df['roi'].unique())}")
 
             # ── Pivot predicted slopes ───────────────────────────────────────
@@ -826,6 +927,13 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
                 f'pred_roc_{col}' for col in dkgp_pred_wide.columns[1:]
             ]
 
+            braingen_pred_wide = braingen_data.pivot(
+                index='subject_id', columns='roi', values='pred_slope'
+            ).reset_index()
+            braingen_pred_wide.columns = ['subject_id'] + [
+                f'pred_roc_{col}' for col in braingen_pred_wide.columns[1:]
+            ]
+
             # Real upper bound comes from RNN-AD file — same preprocessing
             # guarantees real AUC >= predicted AUC for RNN-AD
             real_wide = rnn_data.pivot(
@@ -835,21 +943,24 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
                 f'real_roc_{col}' for col in real_wide.columns[1:]
             ]
 
-            print(f"\nRNN-AD predicted subjects: {len(rnn_pred_wide)}")
-            print(f"DKGP predicted subjects:   {len(dkgp_pred_wide)}")
-            print(f"Real upper-bound subjects: {len(real_wide)}")
+            print(f"\nRNN-AD predicted subjects:     {len(rnn_pred_wide)}")
+            print(f"DKGP predicted subjects:       {len(dkgp_pred_wide)}")
+            print(f"BrainGenFlow predicted subjects:{len(braingen_pred_wide)}")
+            print(f"Real upper-bound subjects:      {len(real_wide)}")
 
             # ── Intersect subjects across slope feature sets ──────────────────
             common_subjects = (
                 set(rnn_pred_wide['subject_id'])
                 & set(dkgp_pred_wide['subject_id'])
                 & set(real_wide['subject_id'])
+                & set(braingen_pred_wide['subject_id'])
             )
-            print(f"\nCommon subjects across slope feature sets: {len(common_subjects)}")
+            print(f"\nCommon subjects across all slope feature sets: {len(common_subjects)}")
 
-            rnn_pred_wide  = rnn_pred_wide[rnn_pred_wide['subject_id'].isin(common_subjects)]
-            dkgp_pred_wide = dkgp_pred_wide[dkgp_pred_wide['subject_id'].isin(common_subjects)]
-            real_wide      = real_wide[real_wide['subject_id'].isin(common_subjects)]
+            rnn_pred_wide      = rnn_pred_wide[rnn_pred_wide['subject_id'].isin(common_subjects)]
+            dkgp_pred_wide     = dkgp_pred_wide[dkgp_pred_wide['subject_id'].isin(common_subjects)]
+            braingen_pred_wide = braingen_pred_wide[braingen_pred_wide['subject_id'].isin(common_subjects)]
+            real_wide          = real_wide[real_wide['subject_id'].isin(common_subjects)]
 
             # ── Slope quality ────────────────────────────────────────────────
             print("\n" + "="*80)
@@ -906,14 +1017,15 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
             print(f"  Progression rate: {progression_df['is_progressor'].mean()*100:.1f}%")
 
             # ── Add PTID & merge labels ──────────────────────────────────────
-            for df in [rnn_pred_wide, dkgp_pred_wide, real_wide]:
+            for df in [rnn_pred_wide, dkgp_pred_wide, braingen_pred_wide, real_wide]:
                 df['PTID'] = df['subject_id']
 
             labels = progression_df[['PTID', 'is_progressor']]
 
-            merged_real      = pd.merge(real_wide,      labels, on='PTID', how='inner')
-            merged_pred_rnn  = pd.merge(rnn_pred_wide,  labels, on='PTID', how='inner')
-            merged_pred_dkgp = pd.merge(dkgp_pred_wide, labels, on='PTID', how='inner')
+            merged_real           = pd.merge(real_wide,           labels, on='PTID', how='inner')
+            merged_pred_rnn       = pd.merge(rnn_pred_wide,       labels, on='PTID', how='inner')
+            merged_pred_dkgp      = pd.merge(dkgp_pred_wide,      labels, on='PTID', how='inner')
+            merged_pred_braingen  = pd.merge(braingen_pred_wide,  labels, on='PTID', how='inner')
 
             # ── Baseline: intersect with slope cohort ────────────────────────
             merged_baseline  = None
@@ -929,28 +1041,30 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
                 print("\n  Note: Baseline analysis skipped — baseline volumes not available")
 
             # ── Canonical subject ordering ────────────────────────────────────
-            # All four feature sets must contain exactly the same subjects in
-            # exactly the same row order so that StratifiedKFold(random_state=42)
-            # produces identical fold assignments across all evaluate_features
-            # calls — a hard requirement for DeLong's test row-level alignment.
+            # All feature sets must contain the same subjects in the same row
+            # order so that StratifiedKFold(random_state=42) produces identical
+            # fold assignments — a hard requirement for DeLong's test alignment.
             common_ptids = (
                 set(merged_real['PTID'])
                 & set(merged_pred_rnn['PTID'])
                 & set(merged_pred_dkgp['PTID'])
+                & set(merged_pred_braingen['PTID'])
                 & (set(merged_baseline['PTID']) if merged_baseline is not None
                    else set(merged_real['PTID']))
             )
             print(f"\nSubjects in all feature sets (final intersection): {len(common_ptids)}")
 
-            merged_real      = (merged_real[merged_real['PTID'].isin(common_ptids)]
-                                .sort_values('PTID').reset_index(drop=True))
-            merged_pred_rnn  = (merged_pred_rnn[merged_pred_rnn['PTID'].isin(common_ptids)]
-                                .sort_values('PTID').reset_index(drop=True))
-            merged_pred_dkgp = (merged_pred_dkgp[merged_pred_dkgp['PTID'].isin(common_ptids)]
-                                .sort_values('PTID').reset_index(drop=True))
+            merged_real          = (merged_real[merged_real['PTID'].isin(common_ptids)]
+                                    .sort_values('PTID').reset_index(drop=True))
+            merged_pred_rnn      = (merged_pred_rnn[merged_pred_rnn['PTID'].isin(common_ptids)]
+                                    .sort_values('PTID').reset_index(drop=True))
+            merged_pred_dkgp     = (merged_pred_dkgp[merged_pred_dkgp['PTID'].isin(common_ptids)]
+                                    .sort_values('PTID').reset_index(drop=True))
+            merged_pred_braingen = (merged_pred_braingen[merged_pred_braingen['PTID'].isin(common_ptids)]
+                                    .sort_values('PTID').reset_index(drop=True))
             if merged_baseline is not None:
-                merged_baseline = (merged_baseline[merged_baseline['PTID'].isin(common_ptids)]
-                                   .sort_values('PTID').reset_index(drop=True))
+                merged_baseline  = (merged_baseline[merged_baseline['PTID'].isin(common_ptids)]
+                                    .sort_values('PTID').reset_index(drop=True))
 
             # ── Label alignment verification ──────────────────────────────────
             assert (merged_real['is_progressor'].values ==
@@ -959,6 +1073,9 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
             assert (merged_real['is_progressor'].values ==
                     merged_pred_dkgp['is_progressor'].values).all(), \
                 "Label mismatch: real vs DKGP after sorting."
+            assert (merged_real['is_progressor'].values ==
+                    merged_pred_braingen['is_progressor'].values).all(), \
+                "Label mismatch: real vs BrainGenFlow after sorting."
             if merged_baseline is not None:
                 assert (merged_real['is_progressor'].values ==
                         merged_baseline['is_progressor'].values).all(), \
@@ -1001,15 +1118,22 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
                 'DKGP Predicted'
             )
 
+            pred_braingen_results = evaluate_features(
+                merged_pred_braingen.drop(['subject_id', 'PTID', 'is_progressor'], axis=1),
+                merged_pred_braingen['is_progressor'],
+                'BrainGenFlow Predicted'
+            )
+
             # ── Cache results ────────────────────────────────────────────────
             CACHE_PATH = './manuscript1/mci_classification_results_cache.pkl'
             os.makedirs('./manuscript1', exist_ok=True)
             with open(CACHE_PATH, 'wb') as f:
                 pickle.dump({
-                    'baseline_results':  baseline_results,
-                    'pred_rnn_results':  pred_rnn_results,
-                    'pred_dkgp_results': pred_dkgp_results,
-                    'real_results':      real_results,
+                    'baseline_results':      baseline_results,
+                    'pred_rnn_results':      pred_rnn_results,
+                    'pred_dkgp_results':     pred_dkgp_results,
+                    'pred_braingen_results': pred_braingen_results,
+                    'real_results':          real_results,
                 }, f)
             print(f"\n✓ Results cached to {CACHE_PATH}")
 
@@ -1019,16 +1143,18 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
                 pred_rnn_results,
                 pred_dkgp_results,
                 real_results,
-                save_prefix='mci_stable_vs_progressor'
+                save_prefix='mci_stable_vs_progressor',
+                braingen_pred_results=pred_braingen_results
             )
 
             # ── DeLong pairwise comparisons ──────────────────────────────────
             stats_results = perform_statistical_comparison(
-                baseline_results = baseline_results,
-                rnn_results      = pred_rnn_results,
-                dkgp_results     = pred_dkgp_results,
-                real_results     = real_results,
-                alpha            = 0.05
+                baseline_results  = baseline_results,
+                rnn_results       = pred_rnn_results,
+                dkgp_results      = pred_dkgp_results,
+                real_results      = real_results,
+                braingen_results  = pred_braingen_results,
+                alpha             = 0.05
             )
 
             # ── Comprehensive metrics table ───────────────────────────────────
@@ -1038,9 +1164,10 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
             print("="*80)
 
             method_list = [
-                ("Real upper bound", real_results[FIXED_CLASSIFIER]),
-                ("DKGP predicted",   pred_dkgp_results[DKGP_CLASSIFIER]),
-                ("RNN-AD predicted", pred_rnn_results[RNN_CLASSIFIER]),
+                ("Real upper bound",        real_results[FIXED_CLASSIFIER]),
+                ("BrainGenFlow predicted",  pred_braingen_results[BRAINGEN_CLASSIFIER]),
+                ("DKGP predicted",          pred_dkgp_results[DKGP_CLASSIFIER]),
+                ("RNN-AD predicted",        pred_rnn_results[RNN_CLASSIFIER]),
             ]
             if baseline_results is not None:
                 method_list.append(("Baseline volumes", baseline_results[RNN_CLASSIFIER]))
@@ -1073,27 +1200,36 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
                     print(f"  {cell:<{col_w}}", end="")
                 print()
 
-            # ── Delta table: DKGP vs RNN-AD and DKGP vs Baseline ─────────────
-            dkgp_r = pred_dkgp_results[DKGP_CLASSIFIER]
-            rnn_r  = pred_rnn_results[RNN_CLASSIFIER]
+            # ── Delta table: BrainGenFlow vs all others ───────────────────────
+            braingen_r = pred_braingen_results[BRAINGEN_CLASSIFIER]
+            dkgp_r     = pred_dkgp_results[DKGP_CLASSIFIER]
+            rnn_r      = pred_rnn_results[RNN_CLASSIFIER]
 
-            print(f"\n  Delta (DKGP predicted − RNN-AD predicted):")
+            print(f"\n  Delta (BrainGenFlow predicted − RNN-AD predicted):")
             for key, label in metrics:
-                dv = dkgp_r.get(key, float('nan'))
+                bv = braingen_r.get(key, float('nan'))
                 rv = rnn_r.get(key, float('nan'))
-                if not (np.isnan(dv) or np.isnan(rv)):
-                    print(f"    {label:<14}: {dv - rv:+.3f}  "
-                          f"{'↑' if dv > rv else '↓'}")
+                if not (np.isnan(bv) or np.isnan(rv)):
+                    print(f"    {label:<14}: {bv - rv:+.3f}  "
+                          f"{'↑' if bv > rv else '↓'}")
+
+            print(f"\n  Delta (BrainGenFlow predicted − DKGP predicted):")
+            for key, label in metrics:
+                bv = braingen_r.get(key, float('nan'))
+                dv = dkgp_r.get(key, float('nan'))
+                if not (np.isnan(bv) or np.isnan(dv)):
+                    print(f"    {label:<14}: {bv - dv:+.3f}  "
+                          f"{'↑' if bv > dv else '↓'}")
 
             if baseline_results is not None:
                 base_r = baseline_results[RNN_CLASSIFIER]
-                print(f"\n  Delta (DKGP predicted − Baseline volumes):")
+                print(f"\n  Delta (BrainGenFlow predicted − Baseline volumes):")
                 for key, label in metrics:
-                    dv = dkgp_r.get(key, float('nan'))
-                    bv = base_r.get(key, float('nan'))
-                    if not (np.isnan(dv) or np.isnan(bv)):
-                        print(f"    {label:<14}: {dv - bv:+.3f}  "
-                              f"{'↑' if dv > bv else '↓'}")
+                    bv = braingen_r.get(key, float('nan'))
+                    bsv = base_r.get(key, float('nan'))
+                    if not (np.isnan(bv) or np.isnan(bsv)):
+                        print(f"    {label:<14}: {bv - bsv:+.3f}  "
+                              f"{'↑' if bv > bsv else '↓'}")
 
             print("\n" + "="*80)
             print("ANALYSIS COMPLETE")
@@ -1229,9 +1365,27 @@ if __name__ == "__main__":
     print(f"  DKGP RoC: {len(dkgp_out):,} measurements, "
           f"{dkgp_roc_df['subject_id'].nunique()} subjects → {DKGP_OUT_FILE}")
 
+    # ── BrainGenFlow ─────────────────────────────────────────────────────────
+    print("\n" + "="*80)
+    print("PROCESSING BRAINGEN FLOW DATA")
+    print("="*80)
+
+    BRAINGEN_PREDICTIONS_DIR = Path('./predictions')
+    braingen_roc_df = load_braingen_predictions(BRAINGEN_PREDICTIONS_DIR)
+    if len(braingen_roc_df) > 0:
+        braingen_roc_df.to_csv(
+            Path('./manuscript1/rate_of_change_per_roi_braingen.csv'), index=False
+        )
+        print(f"  BrainGenFlow RoC saved → ./manuscript1/rate_of_change_per_roi_braingen.csv")
+    else:
+        print("  Warning: no BrainGenFlow trajectories loaded — skipping.")
+
     # ── Combine & run ────────────────────────────────────────────────────────
-    combined_roc_df = pd.concat([rnn_roc_df, dkgp_roc_df], ignore_index=True)
-    print(f"\nCombined: {len(combined_roc_df):,} total measurements")
+    combined_roc_df = pd.concat(
+        [rnn_roc_df, dkgp_roc_df, braingen_roc_df], ignore_index=True
+    )
+    print(f"\nCombined: {len(combined_roc_df):,} total measurements "
+          f"({combined_roc_df['model'].value_counts().to_dict()})")
 
     covariates_df = pd.read_csv(
         '/home/cbica/Desktop/LongGPClustering/data1/'
@@ -1264,6 +1418,7 @@ if __name__ == '__plot_only__' or (
         cache['pred_rnn_results'],
         cache['pred_dkgp_results'],
         cache['real_results'],
-        save_prefix='mci_stable_vs_progressor'
+        save_prefix='mci_stable_vs_progressor',
+        braingen_pred_results=cache.get('pred_braingen_results')
     )
     print("Done. Check ./miccai26/ for updated figures.")
