@@ -48,8 +48,10 @@ warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 # ── Paths ─────────────────────────────────────────────────────────────────────
 PRED_DIR    = "./predictions"
 COV_FILE    = "./longitudinal_covariates_allstudies.csv"
+REF_CSV     = "./OldHarmonizedMUSEROIs.csv"
 OUT_DIR     = "./trajectory_error_analysis"
 MERGED_CSV  = os.path.join(OUT_DIR, "merged_observations.csv")
+WIDE_CSV    = os.path.join(OUT_DIR, "merged_predictions_wide.csv")
 ERROR_CSV   = os.path.join(OUT_DIR, "error_by_covariates.csv")
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -178,6 +180,84 @@ def merge_fold_files(pred_dir: str, out_path: str) -> pd.DataFrame:
     merged.to_csv(out_path, index=False)
     print(f"[merge] Saved {len(merged):,} rows → {out_path}")
     return merged
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1b. WIDE-FORMAT MERGE  (same structure as OldHarmonizedMUSEROIs.csv)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def merge_predictions_wide(pred_dir: str, ref_csv: str, out_path: str) -> pd.DataFrame:
+    """
+    Read every trajectory_<PTID>_fold<N>.csv in pred_dir and produce a
+    wide-format DataFrame matching the structure of OldHarmonizedMUSEROIs.csv:
+
+        id, time, y_H_MUSE_Volume_<roi_id>, score_H_MUSE_Volume_<roi_id>, ...
+
+    ROI index i in the prediction files maps positionally to the i-th MUSE
+    Volume ID listed in ref_csv.  One row is emitted per (PTID, month) where
+    at least one ROI has an observed real value.
+
+    Saves to out_path and returns the DataFrame.
+    """
+    if os.path.exists(out_path):
+        print(f"[merge_wide] Loading cached file: {out_path}")
+        return pd.read_csv(out_path)
+
+    # Derive ordered ROI IDs from the reference CSV column order
+    ref_cols = pd.read_csv(ref_csv, nrows=0).columns.tolist()
+    roi_ids  = [int(c.replace("y_H_MUSE_Volume_", ""))
+                for c in ref_cols if c.startswith("y_H_MUSE_Volume_")]
+
+    # Pre-build the interleaved column order: id, time, y_X, score_X, y_Y, ...
+    wide_cols = ["id", "time"]
+    for rid in roi_ids:
+        wide_cols.append(f"y_H_MUSE_Volume_{rid}")
+        wide_cols.append(f"score_H_MUSE_Volume_{rid}")
+
+    files = sorted(
+        f for f in os.listdir(pred_dir)
+        if re.match(r"^trajectory_.+_fold\d+\.csv$", f)
+    )
+    print(f"[merge_wide] Found {len(files)} fold trajectory files.")
+
+    month_re = re.compile(r"^Month_(\d+)$")
+    records  = []
+
+    for fname in files:
+        ptid, _ = parse_fold_filename(fname)
+        df = pd.read_csv(os.path.join(pred_dir, fname))
+
+        month_cols = [c for c in df.columns if month_re.match(c)]
+
+        real_rows = df[df["ROI"].str.endswith("_real")].copy()
+        gen_rows  = df[df["ROI"].str.endswith("_gen")].copy()
+
+        real_rows["roi_idx"] = real_rows["ROI"].str.replace("_real", "", regex=False).astype(int)
+        gen_rows["roi_idx"]  = gen_rows["ROI"].str.replace("_gen",  "", regex=False).astype(int)
+
+        real_rows = real_rows.set_index("roi_idx")
+        gen_rows  = gen_rows.set_index("roi_idx")
+
+        for col in month_cols:
+            month = int(month_re.match(col).group(1))
+
+            # Emit a row only for months where at least one ROI was observed
+            if real_rows[col].dropna().empty:
+                continue
+
+            row = {"id": ptid, "time": float(month)}
+            for i, rid in enumerate(roi_ids):
+                row[f"y_H_MUSE_Volume_{rid}"]     = (real_rows.loc[i, col]
+                                                      if i in real_rows.index else float("nan"))
+                row[f"score_H_MUSE_Volume_{rid}"] = (gen_rows.loc[i, col]
+                                                      if i in gen_rows.index  else float("nan"))
+            records.append(row)
+
+    result = pd.DataFrame(records, columns=wide_cols)
+    result.to_csv(out_path, index=False)
+    n_subj = result["id"].nunique()
+    print(f"[merge_wide] Saved {len(result):,} rows, {n_subj} subjects → {out_path}")
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -745,6 +825,11 @@ def main() -> None:
     print("STEP 1 — Parsing and merging fold trajectory files")
     print("=" * 70)
     merged = merge_fold_files(PRED_DIR, MERGED_CSV)
+
+    print("\n" + "=" * 70)
+    print("STEP 1b — Building wide-format predictions (OldHarmonizedMUSEROIs structure)")
+    print("=" * 70)
+    merge_predictions_wide(PRED_DIR, REF_CSV, WIDE_CSV)
 
     print("\n" + "=" * 70)
     print("STEP 2 — Loading covariates")
