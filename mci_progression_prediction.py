@@ -1259,8 +1259,8 @@ if __name__ == "__main__":
     print("="*80)
 
     # ── Paths ────────────────────────────────────────────────────────────────
-    RNN_IN_FILE   = Path("../Standalone_Nguyen2020_RNNAD/manuscript1/RNN_AD_Consolidated.csv")
-    DKGP_IN_FILE  = Path("./manuscript1/OldHarmonizedMUSEROIs.csv")
+    RNN_IN_FILE   = Path(".csv")x
+    DKGP_IN_FILE  = Path("../LongGPRegressionBaseline/manuscript1/OldHarmonizedMUSEROIs.csv")
     RNN_OUT_FILE  = Path("./manuscript1/rate_of_change_per_roi_rnnad.csv")
     DKGP_OUT_FILE = Path("./manuscript1/rate_of_change_per_roi_dkgp.csv")
 
