@@ -2,12 +2,12 @@ BrainGenFlow Staging Analysis
 Working directory: /home/user/ClinicalApps
 
 Step 1: Building ROI label mapping …
-  hmuse_list.npy not found — using list-index labels (ROI_0 … ROI_144)
+  Loaded hmuse_list.npy — ROI labels: ['MUSE_4', 'MUSE_11', 'MUSE_23', 'MUSE_30', 'MUSE_31'] … ['MUSE_205', 'MUSE_206', 'MUSE_207']
 
-Step 2: Loading predicted trajectories and computing OLS slopes …
-  Found 3142 trajectory files
-  Computed slopes for 3142 subjects, 145 ROIs
-  ROI columns in slopes DataFrame: ['ROI_0', 'ROI_1', 'ROI_2', 'ROI_3', 'ROI_4'] … ['ROI_142', 'ROI_143', 'ROI_144']
+Step 2: Loading fold trajectories and computing OLS slopes …
+  Found 3963 fold trajectory files
+  Computed slopes for 3963 subjects, 145 ROIs  (skipped 0 files)
+  ROI columns in slopes DataFrame: ['MUSE_4', 'MUSE_11', 'MUSE_23', 'MUSE_30'] … ['MUSE_205', 'MUSE_206', 'MUSE_207']
 
 Step 3: Building MCI progressor / non-progressor labels …
   MCI subjects in covariates : 720
@@ -15,53 +15,36 @@ Step 3: Building MCI progressor / non-progressor labels …
   Non-progressors            : 462
 
 Step 4: Merging slopes with progression labels …
-  Subjects after merge        : 695
-  ROI columns in merged df    : 145
-  First 5 ROI cols            : ['ROI_0', 'ROI_1', 'ROI_2', 'ROI_3', 'ROI_4']
-  Last  5 ROI cols            : ['ROI_140', 'ROI_141', 'ROI_142', 'ROI_143', 'ROI_144']
-  Subjects after NaN drop     : 695  (removed 0)
+  Subjects after merge         : 697
+  ROI columns in merged df     : 145
+  Specific ROI cols (first 5)  : ['MUSE_4', 'MUSE_11', 'MUSE_23', 'MUSE_30', 'MUSE_31']
+  Specific ROI cols (last  5)  : ['MUSE_203', 'MUSE_204', 'MUSE_205', 'MUSE_206', 'MUSE_207']
+  Subjects after all-NaN drop  : 697  (removed 0)
 
-Step 5: Running Mann-Whitney U tests per ROI (BH FDR correction) …
+Step 5: Mann-Whitney U test per ROI (BH FDR correction) …
 
-======================================================================
+========================================================================
 STAGING ANALYSIS — BrainGenFlow Trajectory Group Differences
-======================================================================
-  Cohort (MCI subjects with predictions):
-    Total        : 695
-    Progressors  : 243  (35.0%)
-    Non-progressors: 452  (65.0%)
+========================================================================
+  Cohort (MCI subjects with fold predictions):
+    Total           : 697
+    Progressors     : 245  (35.2%)
+    Non-progressors : 452  (64.8%)
 
-  ROI-level Mann-Whitney U test (BH-corrected, α=0.05):
+  ROI-level Mann-Whitney U test (BH FDR, α = 0.05):
     ROIs tested  : 145
-    Significant  : 65  (44.8%)
+    Significant  : 4  (2.8%)
 
-  Top significant ROIs (up to 20):
-  ROI                  p_adj      Δmean    mean_prog   mean_nonprog
-  -----------------------------------------------------------------
-  ROI_112         3.5151e-05     0.0021      -0.0050        -0.0071
-  ROI_28          3.9642e-05     0.0019       0.0030         0.0010
-  ROI_129         3.9642e-05     0.0022      -0.0025        -0.0047
-  ROI_6           4.0641e-05     0.0020       0.0012        -0.0008
-  ROI_102         1.5310e-04     0.0016      -0.0031        -0.0046
-  ROI_89          1.5310e-04     0.0020      -0.0014        -0.0035
-  ROI_2           9.4998e-04     0.0017      -0.0048        -0.0066
-  ROI_101         9.4998e-04     0.0013      -0.0023        -0.0035
-  ROI_128         1.0912e-03     0.0016      -0.0034        -0.0050
-  ROI_7           1.0912e-03     0.0016       0.0044         0.0028
-  ROI_21          1.1492e-03     0.0018       0.0006        -0.0011
-  ROI_27          1.4745e-03     0.0015      -0.0021        -0.0035
-  ROI_77          1.4745e-03     0.0013      -0.0014        -0.0028
-  ROI_29          2.1617e-03     0.0011       0.0005        -0.0006
-  ROI_44          3.0381e-03     0.0014       0.0003        -0.0012
-  ROI_11          3.1851e-03     0.0016       0.0015        -0.0001
-  ROI_111         3.1851e-03     0.0014      -0.0062        -0.0076
-  ROI_91          3.1851e-03     0.0018      -0.0038        -0.0057
-  ROI_99          3.1851e-03     0.0016       0.0019         0.0003
-  ROI_22          3.1851e-03     0.0016      -0.0005        -0.0021
+  Top significant ROIs (up to 20) — sorted by adjusted p-value:
+  ROI               p_adj   effect_r     Δmean   mean_prog  mean_nonprog
+  ----------------------------------------------------------------------
+  MUSE_186      2.929e-02      0.165  -0.00048    -0.00355      -0.00307
+  MUSE_198      2.929e-02      0.157  -0.00048    -0.00531      -0.00483
+  MUSE_196      2.929e-02      0.161  -0.00045    -0.00603      -0.00557
+  MUSE_76       4.206e-02      0.149  -0.00063    -0.00900      -0.00837
 
-  Overall verdict:
-    MAINTAINED — predicted trajectories preserve substantial group differences.
-======================================================================
+  Overall verdict: PARTIAL     — weak but present group separation.
+========================================================================
 
   Saved merged DataFrame  → staging_analysis/merged_mci_slopes_with_labels.csv
   Saved ROI test results  → staging_analysis/roi_group_difference_tests.csv
