@@ -1,0 +1,363 @@
+================================================================================
+MCI STABLE VS MCI PROGRESSOR CLASSIFICATION EXPERIMENT
+================================================================================
+Experiment Design:
+  - Target: Discriminate MCI Stable (MCI→MCI) vs MCI Progressor (MCI→AD)
+  - Data source: merged_predictions_wide.csv (BrainGenFlow outputs)
+  - Feature sets compared:
+      A. Baseline volumes      — 145 y_ ROIs at time=0 (from wide CSV)
+      B. Real RoC              — OLS slope of y_ across observed timepoints
+      C. BrainGenFlow pred RoC — OLS slope of full 70-month generated trajectory
+  - Classifier: Random Forest  (5-fold nested CV + inner 3-fold GridSearchCV)
+================================================================================
+
+[1] Loading merged_predictions_wide.csv ...
+  12,823 rows | 3963 subjects | time 0–69 months
+
+[2] Extracting baseline volumes and real RoC from wide CSV ...
+  Baseline (time=0):  3963 subjects
+  Real RoC (OLS y_):  3963 subjects
+
+[3] Computing BrainGenFlow predicted RoC from full 70-month trajectories ...
+  Found 3963 BrainGenFlow trajectory files in 'predictions'
+  BrainGenFlow RoC: 574,635 measurements, 3963 subjects
+  Pred RoC (full traj): 3963 subjects, 145 ROIs
+
+[3b] BrainGenFlow slope quality ...
+
+================================================================================
+SLOPE QUALITY ANALYSIS
+================================================================================
+
+Real Slope Statistics:
+  mean: -0.043
+  std: 0.309
+  min: -19.819
+  25%: -0.086
+  50%: -0.033
+  75%: 0.012
+  max: 18.216
+
+Predicted Slope Statistics:
+  mean: -0.048
+  std: 0.041
+  min: -0.243
+  25%: -0.069
+  50%: -0.048
+  75%: -0.030
+  max: 0.288
+
+Correlation between real and predicted slopes: -0.007
+R-squared: 0.000
+Mean Absolute Error: 0.114
+Root Mean Squared Error: 0.312
+Variance Ratio (Predicted/Real): 0.018
+
+Number of Timepoints Statistics:
+  mean: 3.3
+  std: 1.5
+  min: 2.0
+  25%: 2.0
+  50%: 3.0
+  75%: 4.0
+  max: 10.0
+
+Time Range (years) Statistics:
+  mean: 3.3
+  std: 1.5
+  min: 0.1
+  25%: 2.1
+  50%: 3.3
+  75%: 4.6
+  max: 5.8
+
+================================================================================
+SLOPE QUALITY ASSESSMENT
+================================================================================
+Correlation Quality: Very Poor (-0.007)
+Variance Quality: Poor (significant variance distortion) (ratio: 0.018)
+Error Quality: Poor (MAE: 0.114)
+
+Overall Slope Quality Assessment:
+  The model shows limited ability to predict rate of change
+  Overall Quality: Poor
+
+Slope quality comparison plot saved.
+
+[4] Building MCI progression labels from covariates ...
+  MCI subjects with labels : 585
+  Progressors   (MCI→AD)   : 244
+  Non-progressors (MCI→MCI): 341
+
+[5] Intersecting subjects across all feature sets ...
+  Common subjects: 566
+  Label alignment verified ✓
+  Final cohort: 566 subjects  (231 progressors, 335 non-progressors, 40.8% progression rate)
+
+[6] Evaluating feature sets (5-fold nested CV) ...
+
+================================================================================
+ANALYSIS USING BASELINE VOLUMES (Y_ AT T=0) FEATURES
+================================================================================
+Scheme: 5-fold outer CV | inner GridSearchCV(3-fold) for hyperparameter tuning
+
+Logistic Regression:
+-------------------
+  Fold 1: AUC = 0.748  best params = {'C': 0.01}
+  Fold 2: AUC = 0.712  best params = {'C': 0.01}
+  Fold 3: AUC = 0.789  best params = {'C': 0.01}
+  Fold 4: AUC = 0.695  best params = {'C': 0.01}
+  Fold 5: AUC = 0.642  best params = {'C': 0.01}
+
+  → Mean ROC-AUC : 0.717 ± 0.049  [5 held-out test folds]
+  → Mean PR-AUC  : 0.633 ± 0.065
+  → Mean Accuracy: 0.664 ± 0.037
+  → Mean Precision: 0.584 ± 0.041
+  → Mean Recall  : 0.627 ± 0.087
+  → Mean F1      : 0.602 ± 0.052
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.416 ± 0.041
+    FPR: 0.310 ± 0.059
+
+Random Forest:
+-------------
+  Fold 1: AUC = 0.697  best params = {'max_depth': None, 'n_estimators': 200}
+  Fold 2: AUC = 0.678  best params = {'max_depth': 5, 'n_estimators': 200}
+  Fold 3: AUC = 0.687  best params = {'max_depth': 10, 'n_estimators': 200}
+  Fold 4: AUC = 0.628  best params = {'max_depth': None, 'n_estimators': 200}
+  Fold 5: AUC = 0.615  best params = {'max_depth': None, 'n_estimators': 200}
+
+  → Mean ROC-AUC : 0.661 ± 0.033  [5 held-out test folds]
+  → Mean PR-AUC  : 0.562 ± 0.037
+  → Mean Accuracy: 0.648 ± 0.029
+  → Mean Precision: 0.610 ± 0.061
+  → Mean Recall  : 0.390 ± 0.095
+  → Mean F1      : 0.469 ± 0.077
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.390 ± 0.061
+    FPR: 0.173 ± 0.045
+
+Gradient Boosting:
+-----------------
+  Fold 1: AUC = 0.672  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200}
+  Fold 2: AUC = 0.672  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200}
+  Fold 3: AUC = 0.670  best params = {'learning_rate': 0.1, 'max_depth': 5, 'n_estimators': 200}
+  Fold 4: AUC = 0.669  best params = {'learning_rate': 0.1, 'max_depth': 5, 'n_estimators': 200}
+  Fold 5: AUC = 0.612  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 100}
+
+  → Mean ROC-AUC : 0.659 ± 0.023  [5 held-out test folds]
+  → Mean PR-AUC  : 0.546 ± 0.034
+  → Mean Accuracy: 0.610 ± 0.030
+  → Mean Precision: 0.526 ± 0.047
+  → Mean Recall  : 0.415 ± 0.065
+  → Mean F1      : 0.463 ± 0.056
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.474 ± 0.047
+    FPR: 0.257 ± 0.029
+
+================================================================================
+ANALYSIS USING REAL ROC (UPPER BOUND) FEATURES
+================================================================================
+Scheme: 5-fold outer CV | inner GridSearchCV(3-fold) for hyperparameter tuning
+
+Logistic Regression:
+-------------------
+  Fold 1: AUC = 0.776  best params = {'C': 0.1}
+  Fold 2: AUC = 0.738  best params = {'C': 0.1}
+  Fold 3: AUC = 0.767  best params = {'C': 0.01}
+  Fold 4: AUC = 0.764  best params = {'C': 0.1}
+  Fold 5: AUC = 0.730  best params = {'C': 0.01}
+
+  → Mean ROC-AUC : 0.755 ± 0.018  [5 held-out test folds]
+  → Mean PR-AUC  : 0.610 ± 0.021
+  → Mean Accuracy: 0.710 ± 0.041
+  → Mean Precision: 0.626 ± 0.040
+  → Mean Recall  : 0.714 ± 0.083
+  → Mean F1      : 0.666 ± 0.056
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.374 ± 0.040
+    FPR: 0.293 ± 0.032
+
+Random Forest:
+-------------
+  Fold 1: AUC = 0.889  best params = {'max_depth': 10, 'n_estimators': 100}
+  Fold 2: AUC = 0.775  best params = {'max_depth': 10, 'n_estimators': 200}
+  Fold 3: AUC = 0.870  best params = {'max_depth': None, 'n_estimators': 200}
+  Fold 4: AUC = 0.805  best params = {'max_depth': 10, 'n_estimators': 100}
+  Fold 5: AUC = 0.777  best params = {'max_depth': 10, 'n_estimators': 100}
+
+  → Mean ROC-AUC : 0.823 ± 0.048  [5 held-out test folds]
+  → Mean PR-AUC  : 0.773 ± 0.058
+  → Mean Accuracy: 0.758 ± 0.041
+  → Mean Precision: 0.746 ± 0.053
+  → Mean Recall  : 0.618 ± 0.098
+  → Mean F1      : 0.672 ± 0.069
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.254 ± 0.053
+    FPR: 0.146 ± 0.040
+
+Gradient Boosting:
+-----------------
+  Fold 1: AUC = 0.888  best params = {'learning_rate': 0.05, 'max_depth': 5, 'n_estimators': 200}
+  Fold 2: AUC = 0.786  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200}
+  Fold 3: AUC = 0.856  best params = {'learning_rate': 0.05, 'max_depth': 5, 'n_estimators': 200}
+  Fold 4: AUC = 0.818  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200}
+  Fold 5: AUC = 0.757  best params = {'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 100}
+
+  → Mean ROC-AUC : 0.821 ± 0.047  [5 held-out test folds]
+  → Mean PR-AUC  : 0.780 ± 0.044
+  → Mean Accuracy: 0.742 ± 0.049
+  → Mean Precision: 0.702 ± 0.069
+  → Mean Recall  : 0.645 ± 0.058
+  → Mean F1      : 0.671 ± 0.058
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.298 ± 0.069
+    FPR: 0.191 ± 0.058
+
+================================================================================
+ANALYSIS USING BRAINGENFLOW PREDICTED ROC FEATURES
+================================================================================
+Scheme: 5-fold outer CV | inner GridSearchCV(3-fold) for hyperparameter tuning
+
+Logistic Regression:
+-------------------
+  Fold 1: AUC = 0.589  best params = {'C': 0.1}
+  Fold 2: AUC = 0.629  best params = {'C': 0.01}
+  Fold 3: AUC = 0.632  best params = {'C': 1.0}
+  Fold 4: AUC = 0.602  best params = {'C': 1.0}
+  Fold 5: AUC = 0.572  best params = {'C': 0.1}
+
+  → Mean ROC-AUC : 0.605 ± 0.023  [5 held-out test folds]
+  → Mean PR-AUC  : 0.488 ± 0.027
+  → Mean Accuracy: 0.574 ± 0.032
+  → Mean Precision: 0.479 ± 0.035
+  → Mean Recall  : 0.520 ± 0.058
+  → Mean F1      : 0.498 ± 0.045
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.521 ± 0.035
+    FPR: 0.388 ± 0.021
+
+Random Forest:
+-------------
+  Fold 1: AUC = 0.508  best params = {'max_depth': 10, 'n_estimators': 100}
+  Fold 2: AUC = 0.526  best params = {'max_depth': 10, 'n_estimators': 200}
+  Fold 3: AUC = 0.546  best params = {'max_depth': None, 'n_estimators': 200}
+  Fold 4: AUC = 0.547  best params = {'max_depth': 5, 'n_estimators': 200}
+  Fold 5: AUC = 0.547  best params = {'max_depth': None, 'n_estimators': 200}
+
+  → Mean ROC-AUC : 0.535 ± 0.016  [5 held-out test folds]
+  → Mean PR-AUC  : 0.459 ± 0.035
+  → Mean Accuracy: 0.569 ± 0.056
+  → Mean Precision: 0.448 ± 0.142
+  → Mean Recall  : 0.243 ± 0.087
+  → Mean F1      : 0.311 ± 0.101
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.552 ± 0.142
+    FPR: 0.206 ± 0.069
+
+Gradient Boosting:
+-----------------
+  Fold 1: AUC = 0.532  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200}
+  Fold 2: AUC = 0.549  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 100}
+  Fold 3: AUC = 0.526  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 100}
+  Fold 4: AUC = 0.527  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200}
+  Fold 5: AUC = 0.593  best params = {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 200}
+
+  → Mean ROC-AUC : 0.546 ± 0.025  [5 held-out test folds]
+  → Mean PR-AUC  : 0.462 ± 0.030
+  → Mean Accuracy: 0.567 ± 0.038
+  → Mean Precision: 0.465 ± 0.054
+  → Mean Recall  : 0.364 ± 0.018
+  → Mean F1      : 0.408 ± 0.032
+
+  False Discovery Analysis (mean across folds):
+    FDR: 0.535 ± 0.054
+    FPR: 0.293 ± 0.050
+
+  Results cached → ./mciprogression/braingen_mci_cache.pkl
+
+[7] Generating ROC figure ...
+✓ ROC curves saved — conditions: Baseline [Random Forest] | RNN-AD [Random Forest] | DKGP [Random Forest] | BrainGenFlow [Random Forest] | Real UB [Random Forest]
+
+[8] Statistical comparison (DeLong's test) ...
+
+================================================================================
+DELONG'S TEST — BrainGenFlow feature comparisons
+Classifier : Random Forest   |   n ≈ 566 MCI subjects (pooled CV)
+================================================================================
+
+  AUC summary (mean [95 % CI], 5 folds):
+    Real RoC (upper bound)              : 0.8235  [95% CI: 0.7573, 0.8897]
+    BrainGenFlow predicted RoC          : 0.5348  [95% CI: 0.5130, 0.5566]
+    Baseline volumes                    : 0.6610  [95% CI: 0.6151, 0.7068]
+
+────────────────────────────────────────────────────────────
+  BrainGenFlow predicted RoC vs Baseline volumes
+  AUC (BrainGenFlow predicted RoC          ): 0.5330
+  AUC (Baseline volumes                    ): 0.6615
+  ΔAUC = -0.1285   z = -4.563   p = 5.0472e-06   sig (α=0.05): ✓ Yes
+
+────────────────────────────────────────────────────────────
+  BrainGenFlow predicted RoC vs Real RoC (upper bound)
+  AUC (BrainGenFlow predicted RoC          ): 0.5330
+  AUC (Real RoC (upper bound)              ): 0.8193
+  ΔAUC = -0.2863   z = -9.411   p = 4.9174e-21   sig (α=0.05): ✓ Yes
+
+────────────────────────────────────────────────────────────
+  Real RoC (upper bound) vs Baseline volumes
+  AUC (Real RoC (upper bound)              ): 0.8193
+  AUC (Baseline volumes                    ): 0.6615
+  ΔAUC = +0.1578   z = 5.763   p = 8.2633e-09   sig (α=0.05): ✓ Yes
+
+────────────────────────────────────────────────────────────
+CONCLUSION
+  BrainGenFlow predicted RoC is significantly outperformed by Baseline volumes (ΔAUC=-0.1285, z=-4.563, p=5.0472e-06)
+  BrainGenFlow predicted RoC is significantly outperformed by Real RoC (upper bound) (ΔAUC=-0.2863, z=-9.411, p=4.9174e-21)
+  Real RoC (upper bound) significantly outperforms Baseline volumes (ΔAUC=+0.1578, z=5.763, p=8.2633e-09)
+
+================================================================================
+COMPREHENSIVE METRICS  (mean ± std, Random Forest, 5 folds)
+================================================================================
+
+  Metric        Real RoC (upper bound)      BrainGenFlow predicted RoC  Baseline volumes          
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  AUC-ROC       0.823±0.048                 0.535±0.016                 0.661±0.033               
+  AUC-PR        0.773±0.058                 0.459±0.035                 0.562±0.037               
+  Accuracy      0.758                       0.569                       0.648                     
+  Precision     0.746                       0.448                       0.610                     
+  Recall        0.618                       0.243                       0.390                     
+  F1            0.672                       0.311                       0.469                     
+  FDR           0.254                       0.552                       0.390                     
+  FPR           0.146                       0.206                       0.173                     
+
+  Delta  BrainGenFlow − Baseline:
+    AUC-ROC       : -0.126  ↓
+    AUC-PR        : -0.103  ↓
+    Accuracy      : -0.079  ↓
+    Precision     : -0.162  ↓
+    Recall        : -0.147  ↓
+    F1            : -0.158  ↓
+    FDR           : +0.162  ↑
+    FPR           : +0.033  ↑
+
+  Delta  BrainGenFlow − Real RoC (upper bound):
+    AUC-ROC       : -0.289  ↓
+    AUC-PR        : -0.314  ↓
+    Accuracy      : -0.189  ↓
+    Precision     : -0.298  ↓
+    Recall        : -0.375  ↓
+    F1            : -0.361  ↓
+    FDR           : +0.298  ↑
+    FPR           : +0.060  ↑
+
+================================================================================
+DONE — outputs in ./mciprogression
+================================================================================
