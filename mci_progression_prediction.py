@@ -68,10 +68,10 @@ DKGP_CLASSIFIER = 'Logistic Regression'  # best  for DKGP    (AUC = 0.791 ± 0.0
 FIXED_CLASSIFIER = 'Random Forest'       # used for real upper bound ONLY
 
 
-RNN_CLASSIFIER       = 'Random Forest'    # worst for RNN-AD  (AUC = 0.767 ± 0.040)
-DKGP_CLASSIFIER      = 'Random Forest'   # best  for DKGP    (AUC = 0.791 ± 0.022)
-FIXED_CLASSIFIER     = 'Random Forest'   # used for real upper bound ONLY
-BRAINGEN_CLASSIFIER  = 'Random Forest'   # BrainGenFlow predicted trajectories
+RNN_CLASSIFIER       = 'Logistic Regression'
+DKGP_CLASSIFIER      = 'Logistic Regression'
+FIXED_CLASSIFIER     = 'Logistic Regression'
+BRAINGEN_CLASSIFIER  = 'Logistic Regression'
 
 
 
