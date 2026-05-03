@@ -1418,10 +1418,15 @@ def perform_statistical_comparison_braingen(
     for (name_a, name_b, _, _) in comparisons:
         key = f"{name_a} vs {name_b}"
         res = delong_out[key]
-        verdict = ("significantly outperforms" if res['significant']
-                   else "does not significantly outperform")
+        delta = res['auc_a'] - res['auc_b']
+        if not res['significant']:
+            verdict = "does not significantly differ from"
+        elif delta > 0:
+            verdict = "significantly outperforms"
+        else:
+            verdict = "is significantly outperformed by"
         print(f"  {name_a} {verdict} {name_b} "
-              f"(ΔAUC={res['auc_a']-res['auc_b']:+.4f}, "
+              f"(ΔAUC={delta:+.4f}, "
               f"z={res['z_stat']:.3f}, p={res['p_value']:.4e})")
 
     return delong_out
@@ -1433,6 +1438,7 @@ def perform_statistical_comparison_braingen(
 if __name__ == "__main__":
     WIDE_CSV = "./trajectory_error_analysis/merged_predictions_wide.csv"
     COV_CSV  = "./longitudinal_covariates_allstudies.csv"
+    PRED_DIR = "./predictions"
     OUT_DIR  = "./mciprogression"
     LOG_FILE = os.path.join(OUT_DIR, "braingen_mci_progression_results.txt")
     CACHE    = os.path.join(OUT_DIR, "braingen_mci_cache.pkl")
@@ -1462,29 +1468,47 @@ if __name__ == "__main__":
         print("  - Target: Discriminate MCI Stable (MCI→MCI) vs MCI Progressor (MCI→AD)")
         print("  - Data source: merged_predictions_wide.csv (BrainGenFlow outputs)")
         print("  - Feature sets compared:")
-        print("      A. Baseline volumes     — 145 y_ ROIs at time=0")
-        print("      B. Real RoC             — OLS slope of y_ across observed timepoints")
-        print("      C. BrainGenFlow pred RoC — OLS slope of score_ across observed timepoints")
+        print("      A. Baseline volumes      — 145 y_ ROIs at time=0 (from wide CSV)")
+        print("      B. Real RoC              — OLS slope of y_ across observed timepoints")
+        print("      C. BrainGenFlow pred RoC — OLS slope of full 70-month generated trajectory")
         print(f"  - Classifier: {BRAINGEN_CLASSIFIER}  (5-fold nested CV + inner 3-fold GridSearchCV)")
         print("=" * 80)
 
-        # ── 1. Load merged predictions ────────────────────────────────────────
+        # ── 1. Load merged predictions (baseline + real RoC) ─────────────────
         print("\n[1] Loading merged_predictions_wide.csv ...")
         wide = pd.read_csv(WIDE_CSV)
         print(f"  {len(wide):,} rows | {wide['id'].nunique()} subjects "
               f"| time {wide['time'].min():.0f}–{wide['time'].max():.0f} months")
 
-        # ── 2. Extract feature matrices ───────────────────────────────────────
-        print("\n[2] Extracting feature matrices ...")
-        baseline_df, real_roc_df, pred_roc_df, slope_qual_df = \
-            compute_features_from_wide(wide)
-        print(f"  Baseline (time=0):     {len(baseline_df)} subjects")
-        print(f"  Real RoC (OLS y_):     {len(real_roc_df)} subjects")
-        print(f"  Pred RoC (OLS score_): {len(pred_roc_df)} subjects")
+        # ── 2. Baseline volumes + real RoC from wide CSV ──────────────────────
+        print("\n[2] Extracting baseline volumes and real RoC from wide CSV ...")
+        baseline_df, real_roc_df, _, slope_qual_df = compute_features_from_wide(wide)
+        print(f"  Baseline (time=0):  {len(baseline_df)} subjects")
+        print(f"  Real RoC (OLS y_):  {len(real_roc_df)} subjects")
 
-        # ── 3. BrainGenFlow slope quality ─────────────────────────────────────
-        print("\n[3] BrainGenFlow slope quality (real vs predicted) ...")
-        analyze_slope_quality(slope_qual_df)
+        # ── 3. BrainGenFlow predicted RoC — full 70-month trajectory ─────────
+        # The wide CSV only has rows at observed timepoints (2–4 per subject).
+        # Slopes computed from so few points are noisy and miss the model's full
+        # generated trajectory.  load_braingen_predictions() uses all 70 months
+        # of the dense _gen output, giving a stable, representative slope.
+        print("\n[3] Computing BrainGenFlow predicted RoC from full 70-month trajectories ...")
+        braingen_long = load_braingen_predictions(PRED_DIR)
+
+        # Pivot long → wide: subjects × 145 ROI pred_slopes
+        pred_roc_df = (
+            braingen_long
+            .pivot(index="subject_id", columns="roi", values="pred_slope")
+            .reset_index()
+        )
+        pred_roc_df.columns = (
+            ["subject_id"] + [f"roi_{c}" for c in pred_roc_df.columns[1:]]
+        )
+        print(f"  Pred RoC (full traj): {len(pred_roc_df)} subjects, "
+              f"{pred_roc_df.shape[1] - 1} ROIs")
+
+        # Slope quality: real (sparse) vs predicted (full trajectory)
+        print("\n[3b] BrainGenFlow slope quality ...")
+        analyze_slope_quality(braingen_long)
 
         # ── 4. Progression labels ─────────────────────────────────────────────
         print("\n[4] Building MCI progression labels from covariates ...")
@@ -1528,10 +1552,13 @@ if __name__ == "__main__":
               f"{(y_labels == 0).sum()} non-progressors, "
               f"{y_labels.mean() * 100:.1f}% progression rate)")
 
-        feat_cols   = [c for c in baseline_df.columns if c != "subject_id"]
-        X_baseline  = baseline_df[feat_cols].values
-        X_real_roc  = real_roc_df[feat_cols].fillna(0).values
-        X_pred_roc  = pred_roc_df[feat_cols].fillna(0).values
+        base_feat_cols = [c for c in baseline_df.columns if c != "subject_id"]
+        real_feat_cols = [c for c in real_roc_df.columns if c != "subject_id"]
+        pred_feat_cols = [c for c in pred_roc_df.columns if c != "subject_id"]
+
+        X_baseline = baseline_df[base_feat_cols].values
+        X_real_roc = real_roc_df[real_feat_cols].fillna(0).values
+        X_pred_roc = pred_roc_df[pred_feat_cols].fillna(0).values
 
         # ── 6. Evaluate all three feature sets ────────────────────────────────
         print("\n[6] Evaluating feature sets (5-fold nested CV) ...")
