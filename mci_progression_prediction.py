@@ -149,12 +149,12 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
     ax.spines['bottom'].set_linewidth(1.2)
 
     plt.tight_layout()
-    os.makedirs('./miccai26', exist_ok=True)
-    plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.png',
+    os.makedirs('./mciprogression', exist_ok=True)
+    plt.savefig(f'./mciprogression/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.png',
                 dpi=600, bbox_inches='tight')
-    plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.pdf',
+    plt.savefig(f'./mciprogression/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.pdf',
                 bbox_inches='tight')
-    plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.svg',
+    plt.savefig(f'./mciprogression/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.svg',
                 bbox_inches='tight')
     plt.close()
     braingen_note = f' | BrainGenFlow [{BRAINGEN_CLASSIFIER}]' if braingen_pred_results else ''
@@ -839,8 +839,8 @@ def analyze_slope_quality(rate_of_change_df):
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('./miccai26/RNNAD_DKGP_slope_quality_comparison.png', dpi=300, bbox_inches='tight')
-    plt.savefig('./miccai26/RNNAD_DKGP_slope_quality_comparison.svg',              bbox_inches='tight')
+    plt.savefig('./mciprogression/RNNAD_DKGP_slope_quality_comparison.png', dpi=300, bbox_inches='tight')
+    plt.savefig('./mciprogression/RNNAD_DKGP_slope_quality_comparison.svg',              bbox_inches='tight')
     plt.close()
     print(f"\nSlope quality comparison plot saved.")
 
@@ -1433,7 +1433,7 @@ def perform_statistical_comparison_braingen(
 if __name__ == "__main__":
     WIDE_CSV = "./trajectory_error_analysis/merged_predictions_wide.csv"
     COV_CSV  = "./longitudinal_covariates_allstudies.csv"
-    OUT_DIR  = "./miccai26"
+    OUT_DIR  = "./mciprogression"
     LOG_FILE = os.path.join(OUT_DIR, "braingen_mci_progression_results.txt")
     CACHE    = os.path.join(OUT_DIR, "braingen_mci_cache.pkl")
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -1642,14 +1642,14 @@ if __name__ == "__main__":
 if __name__ == "__main__" and len(__import__('sys').argv) > 1 \
         and __import__('sys').argv[1] == '--plot-only':
     import sys, pickle
-    CACHE = "./miccai26/braingen_mci_cache.pkl"
+    CACHE = "./mciprogression/braingen_mci_cache.pkl"
     if not os.path.exists(CACHE):
         print(f"✗ Cache not found at {CACHE}. Run the full script first.")
         sys.exit(1)
     print(f"Loading cached results from {CACHE} ...")
     with open(CACHE, "rb") as fh:
         cache = pickle.load(fh)
-    os.makedirs("./miccai26", exist_ok=True)
+    os.makedirs("./mciprogression", exist_ok=True)
     plot_comprehensive_roc_curves(
         baseline_results      = cache["baseline_results"],
         rnn_pred_results      = None,
@@ -1658,4 +1658,4 @@ if __name__ == "__main__" and len(__import__('sys').argv) > 1 \
         save_prefix           = "braingen_mci_progression",
         braingen_pred_results = cache["braingen_results"],
     )
-    print("Done. Check ./miccai26/ for updated figures.")
+    print("Done. Check ./mciprogression/ for updated figures.")
