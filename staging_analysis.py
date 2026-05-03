@@ -52,7 +52,7 @@ def capture_model_summary(model_fit):
     return f.getvalue()
 
 # Initialize results file
-results_file = './manuscript1/LMM_results_bonferroni.txt'
+results_file = './mciprogression/LMM_results_bonferroni.txt'
 with open(results_file, 'w') as f:
     f.write("LMM Model Results for Staging Analysis (with Bonferroni Correction)\n")
     f.write("=" * 70 + "\n\n")
@@ -76,7 +76,6 @@ for i, r in enumerate(roi_idxs):
         f.write(f"\nROI: {roi_names[i]} (Index: {r})\n")
         f.write("-" * 30 + "\n")
 
-    # data_predicted = pd.read_csv(resultsdir + 'baselineonlyresults/singletask_'  + str(r) + '_dkgp_population_'+ datasets+'.csv')
 
     data_predicted = pd.read_csv('./manuscript1/singletask_MUSE_'+ str(r) + '_dkgp_population_allstudies.csv')
 
