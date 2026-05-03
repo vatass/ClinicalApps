@@ -8,7 +8,7 @@ Experiment Design:
       A. Baseline volumes      — 145 y_ ROIs at time=0 (from wide CSV)
       B. Real RoC              — OLS slope of y_ across observed timepoints
       C. BrainGenFlow pred RoC — OLS slope of full 70-month generated trajectory
-  - Classifier: Random Forest  (5-fold nested CV + inner 3-fold GridSearchCV)
+  - Classifier: Logistic Regression  (5-fold nested CV + inner 3-fold GridSearchCV)
 ================================================================================
 
 [1] Loading merged_predictions_wide.csv ...
@@ -285,78 +285,78 @@ Gradient Boosting:
   Results cached → ./mciprogression/braingen_mci_cache.pkl
 
 [7] Generating ROC figure ...
-✓ ROC curves saved — conditions: Baseline [Random Forest] | RNN-AD [Random Forest] | DKGP [Random Forest] | BrainGenFlow [Random Forest] | Real UB [Random Forest]
+✓ ROC curves saved — conditions: Baseline [Logistic Regression] | RNN-AD [Logistic Regression] | DKGP [Logistic Regression] | BrainGenFlow [Logistic Regression] | Real UB [Logistic Regression]
 
 [8] Statistical comparison (DeLong's test) ...
 
 ================================================================================
 DELONG'S TEST — BrainGenFlow feature comparisons
-Classifier : Random Forest   |   n ≈ 566 MCI subjects (pooled CV)
+Classifier : Logistic Regression   |   n ≈ 566 MCI subjects (pooled CV)
 ================================================================================
 
   AUC summary (mean [95 % CI], 5 folds):
-    Real RoC (upper bound)              : 0.8235  [95% CI: 0.7573, 0.8897]
-    BrainGenFlow predicted RoC          : 0.5348  [95% CI: 0.5130, 0.5566]
-    Baseline volumes                    : 0.6610  [95% CI: 0.6151, 0.7068]
+    Real RoC (upper bound)              : 0.7550  [95% CI: 0.7301, 0.7800]
+    BrainGenFlow predicted RoC          : 0.6049  [95% CI: 0.5728, 0.6370]
+    Baseline volumes                    : 0.7172  [95% CI: 0.6486, 0.7858]
 
 ────────────────────────────────────────────────────────────
   BrainGenFlow predicted RoC vs Baseline volumes
-  AUC (BrainGenFlow predicted RoC          ): 0.5330
-  AUC (Baseline volumes                    ): 0.6615
-  ΔAUC = -0.1285   z = -4.563   p = 5.0472e-06   sig (α=0.05): ✓ Yes
+  AUC (BrainGenFlow predicted RoC          ): 0.6017
+  AUC (Baseline volumes                    ): 0.7164
+  ΔAUC = -0.1146   z = -4.817   p = 1.4548e-06   sig (α=0.05): ✓ Yes
 
 ────────────────────────────────────────────────────────────
   BrainGenFlow predicted RoC vs Real RoC (upper bound)
-  AUC (BrainGenFlow predicted RoC          ): 0.5330
-  AUC (Real RoC (upper bound)              ): 0.8193
-  ΔAUC = -0.2863   z = -9.411   p = 4.9174e-21   sig (α=0.05): ✓ Yes
+  AUC (BrainGenFlow predicted RoC          ): 0.6017
+  AUC (Real RoC (upper bound)              ): 0.7548
+  ΔAUC = -0.1531   z = -5.203   p = 1.9632e-07   sig (α=0.05): ✓ Yes
 
 ────────────────────────────────────────────────────────────
   Real RoC (upper bound) vs Baseline volumes
-  AUC (Real RoC (upper bound)              ): 0.8193
-  AUC (Baseline volumes                    ): 0.6615
-  ΔAUC = +0.1578   z = 5.763   p = 8.2633e-09   sig (α=0.05): ✓ Yes
+  AUC (Real RoC (upper bound)              ): 0.7548
+  AUC (Baseline volumes                    ): 0.7164
+  ΔAUC = +0.0385   z = 1.469   p = 1.4182e-01   sig (α=0.05): ✗ No
 
 ────────────────────────────────────────────────────────────
 CONCLUSION
-  BrainGenFlow predicted RoC is significantly outperformed by Baseline volumes (ΔAUC=-0.1285, z=-4.563, p=5.0472e-06)
-  BrainGenFlow predicted RoC is significantly outperformed by Real RoC (upper bound) (ΔAUC=-0.2863, z=-9.411, p=4.9174e-21)
-  Real RoC (upper bound) significantly outperforms Baseline volumes (ΔAUC=+0.1578, z=5.763, p=8.2633e-09)
+  BrainGenFlow predicted RoC is significantly outperformed by Baseline volumes (ΔAUC=-0.1146, z=-4.817, p=1.4548e-06)
+  BrainGenFlow predicted RoC is significantly outperformed by Real RoC (upper bound) (ΔAUC=-0.1531, z=-5.203, p=1.9632e-07)
+  Real RoC (upper bound) does not significantly differ from Baseline volumes (ΔAUC=+0.0385, z=1.469, p=1.4182e-01)
 
 ================================================================================
-COMPREHENSIVE METRICS  (mean ± std, Random Forest, 5 folds)
+COMPREHENSIVE METRICS  (mean ± std, Logistic Regression, 5 folds)
 ================================================================================
 
   Metric        Real RoC (upper bound)      BrainGenFlow predicted RoC  Baseline volumes          
   ────────────────────────────────────────────────────────────────────────────────────────────────
-  AUC-ROC       0.823±0.048                 0.535±0.016                 0.661±0.033               
-  AUC-PR        0.773±0.058                 0.459±0.035                 0.562±0.037               
-  Accuracy      0.758                       0.569                       0.648                     
-  Precision     0.746                       0.448                       0.610                     
-  Recall        0.618                       0.243                       0.390                     
-  F1            0.672                       0.311                       0.469                     
-  FDR           0.254                       0.552                       0.390                     
-  FPR           0.146                       0.206                       0.173                     
+  AUC-ROC       0.755±0.018                 0.605±0.023                 0.717±0.049               
+  AUC-PR        0.610±0.021                 0.488±0.027                 0.633±0.065               
+  Accuracy      0.710                       0.574                       0.664                     
+  Precision     0.626                       0.479                       0.584                     
+  Recall        0.714                       0.520                       0.627                     
+  F1            0.666                       0.498                       0.602                     
+  FDR           0.374                       0.521                       0.416                     
+  FPR           0.293                       0.388                       0.310                     
 
   Delta  BrainGenFlow − Baseline:
-    AUC-ROC       : -0.126  ↓
-    AUC-PR        : -0.103  ↓
-    Accuracy      : -0.079  ↓
-    Precision     : -0.162  ↓
-    Recall        : -0.147  ↓
-    F1            : -0.158  ↓
-    FDR           : +0.162  ↑
-    FPR           : +0.033  ↑
+    AUC-ROC       : -0.112  ↓
+    AUC-PR        : -0.146  ↓
+    Accuracy      : -0.090  ↓
+    Precision     : -0.105  ↓
+    Recall        : -0.108  ↓
+    F1            : -0.104  ↓
+    FDR           : +0.105  ↑
+    FPR           : +0.078  ↑
 
   Delta  BrainGenFlow − Real RoC (upper bound):
-    AUC-ROC       : -0.289  ↓
-    AUC-PR        : -0.314  ↓
-    Accuracy      : -0.189  ↓
-    Precision     : -0.298  ↓
-    Recall        : -0.375  ↓
-    F1            : -0.361  ↓
-    FDR           : +0.298  ↑
-    FPR           : +0.060  ↑
+    AUC-ROC       : -0.150  ↓
+    AUC-PR        : -0.122  ↓
+    Accuracy      : -0.136  ↓
+    Precision     : -0.147  ↓
+    Recall        : -0.194  ↓
+    F1            : -0.168  ↓
+    FDR           : +0.147  ↑
+    FPR           : +0.096  ↑
 
 ================================================================================
 DONE — outputs in ./mciprogression

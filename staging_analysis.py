@@ -10,7 +10,6 @@ from matplotlib.pyplot import figure
 import matplotlib.pyplot as plt
 from operator import add
 import argparse
-from functions import process_temporal_singletask_data
 import statsmodels.formula.api as smf
 from io import StringIO
 import contextlib
