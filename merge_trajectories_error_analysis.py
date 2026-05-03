@@ -49,6 +49,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 PRED_DIR    = "./predictions"
 COV_FILE    = "./longitudinal_covariates_allstudies.csv"
 REF_CSV     = "./OldHarmonizedMUSEROIs.csv"
+HMUSE_LIST  = "./hmuse_list.npy"
 OUT_DIR     = "./trajectory_error_analysis"
 MERGED_CSV  = os.path.join(OUT_DIR, "merged_observations.csv")
 WIDE_CSV    = os.path.join(OUT_DIR, "merged_predictions_wide.csv")
@@ -186,16 +187,17 @@ def merge_fold_files(pred_dir: str, out_path: str) -> pd.DataFrame:
 # 1b. WIDE-FORMAT MERGE  (same structure as OldHarmonizedMUSEROIs.csv)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def merge_predictions_wide(pred_dir: str, ref_csv: str, out_path: str) -> pd.DataFrame:
+def merge_predictions_wide(pred_dir: str, ref_csv: str, out_path: str,
+                           hmuse_list: str = HMUSE_LIST) -> pd.DataFrame:
     """
     Read every trajectory_<PTID>_fold<N>.csv in pred_dir and produce a
     wide-format DataFrame matching the structure of OldHarmonizedMUSEROIs.csv:
 
         id, time, y_H_MUSE_Volume_<roi_id>, score_H_MUSE_Volume_<roi_id>, ...
 
-    ROI index i in the prediction files maps positionally to the i-th MUSE
-    Volume ID listed in ref_csv.  One row is emitted per (PTID, month) where
-    at least one ROI has an observed real value.
+    ROI index i in the prediction files maps to hmuse_list[i] (loaded from
+    hmuse_list.npy).  One row is emitted per (PTID, month) where at least one
+    ROI has an observed real value.
 
     Saves to out_path and returns the DataFrame.
     """
@@ -203,10 +205,10 @@ def merge_predictions_wide(pred_dir: str, ref_csv: str, out_path: str) -> pd.Dat
         print(f"[merge_wide] Loading cached file: {out_path}")
         return pd.read_csv(out_path)
 
-    # Derive ordered ROI IDs from the reference CSV column order
-    ref_cols = pd.read_csv(ref_csv, nrows=0).columns.tolist()
-    roi_ids  = [int(c.replace("y_H_MUSE_Volume_", ""))
-                for c in ref_cols if c.startswith("y_H_MUSE_Volume_")]
+    # Load ROI ID mapping from hmuse_list.npy (index i → MUSE Volume ID)
+    roi_ids = np.load(hmuse_list).tolist()
+    roi_ids = [int(r) for r in roi_ids]
+    print(f"[merge_wide] Loaded {len(roi_ids)} ROI IDs from {hmuse_list}")
 
     # Pre-build the interleaved column order: id, time, y_X, score_X, y_Y, ...
     wide_cols = ["id", "time"]
@@ -829,7 +831,7 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("STEP 1b — Building wide-format predictions (OldHarmonizedMUSEROIs structure)")
     print("=" * 70)
-    merge_predictions_wide(PRED_DIR, REF_CSV, WIDE_CSV)
+    merge_predictions_wide(PRED_DIR, REF_CSV, WIDE_CSV, HMUSE_LIST)
 
     print("\n" + "=" * 70)
     print("STEP 2 — Loading covariates")
