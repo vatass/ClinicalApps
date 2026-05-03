@@ -149,12 +149,12 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
     ax.spines['bottom'].set_linewidth(1.2)
 
     plt.tight_layout()
-    os.makedirs('./miccai26', exist_ok=True)
-    plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.png',
+    os.makedirs('./mciprogression', exist_ok=True)
+    plt.savefig(f'./mciprogression/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.png',
                 dpi=600, bbox_inches='tight')
-    plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.pdf',
+    plt.savefig(f'./mciprogression/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.pdf',
                 bbox_inches='tight')
-    plt.savefig(f'./miccai26/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.svg',
+    plt.savefig(f'./mciprogression/RNNAD_DKGP_{save_prefix}_comprehensive_roc_curves.svg',
                 bbox_inches='tight')
     plt.close()
     braingen_note = f' | BrainGenFlow [{BRAINGEN_CLASSIFIER}]' if braingen_pred_results else ''
@@ -839,8 +839,8 @@ def analyze_slope_quality(rate_of_change_df):
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('./miccai26/RNNAD_DKGP_slope_quality_comparison.png', dpi=300, bbox_inches='tight')
-    plt.savefig('./miccai26/RNNAD_DKGP_slope_quality_comparison.svg',              bbox_inches='tight')
+    plt.savefig('./mciprogression/RNNAD_DKGP_slope_quality_comparison.png', dpi=300, bbox_inches='tight')
+    plt.savefig('./mciprogression/RNNAD_DKGP_slope_quality_comparison.svg',              bbox_inches='tight')
     plt.close()
     print(f"\nSlope quality comparison plot saved.")
 
@@ -1239,186 +1239,423 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
             sys.stdout = original_stdout
 
 # =============================================================================
-# MAIN
+# BRAINGEN-ONLY HELPERS
+# =============================================================================
+
+def _clean_dx_label(dx) -> str:
+    if not isinstance(dx, str):
+        return "Other"
+    d = dx.strip().lower()
+    if "mci" in d or "mild cognitive" in d:
+        return "MCI"
+    if "ad" in d or "alzheimer" in d or "dementia" in d:
+        return "AD"
+    if d in ("cn", "cognitively normal", "cognitively unimpaired",
+             "cn assumed by study criteria", "normal cognition",
+             "normal", "memory complainer (healthy control)"):
+        return "CN"
+    return "Other"
+
+
+def build_progression_labels(cov_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    From longitudinal covariates, identify MCI subjects and assign binary labels:
+        1 = progressor   (first dx MCI, last dx AD)
+        0 = non-progressor (first dx MCI, last dx MCI)
+    Subjects whose final diagnosis is neither MCI nor AD are excluded.
+    """
+    rows = []
+    for ptid, grp in cov_df.groupby("PTID"):
+        grp    = grp.sort_values("Time")
+        dx_seq = [_clean_dx_label(d) for d in grp["Diagnosis"].tolist()]
+        if dx_seq[0] != "MCI":
+            continue
+        final = dx_seq[-1]
+        if final == "AD":
+            is_prog = 1
+        elif final == "MCI":
+            is_prog = 0
+        else:
+            continue
+        rows.append({"PTID": ptid, "is_progressor": is_prog})
+    return pd.DataFrame(rows)
+
+
+def compute_features_from_wide(wide_df: pd.DataFrame):
+    """
+    Derive three feature matrices from merged_predictions_wide.csv:
+
+    Returns
+    -------
+    baseline_df   : subjects × 145  — y_ volumes at time=0
+    real_roc_df   : subjects × 145  — OLS slope of y_ vs time (in years)
+    pred_roc_df   : subjects × 145  — OLS slope of score_ vs time (in years)
+    slope_qual_df : long format with (subject_id, roi, real_slope, pred_slope,
+                    num_timepoints, time_range, model)  — for analyze_slope_quality
+    """
+    y_cols     = sorted([c for c in wide_df.columns if c.startswith("y_H_MUSE_Volume_")],
+                        key=lambda c: int(c.split("_")[-1]))
+    score_cols = sorted([c for c in wide_df.columns if c.startswith("score_H_MUSE_Volume_")],
+                        key=lambda c: int(c.split("_")[-1]))
+
+    # A. Baseline: y_ columns at time = 0
+    baseline_df = (
+        wide_df[wide_df["time"] == 0.0][["id"] + y_cols]
+        .rename(columns={"id": "subject_id"})
+        .dropna(subset=y_cols)
+        .reset_index(drop=True)
+    )
+
+    # B+C. Per-subject OLS slopes (months → years) + quality
+    real_rows, pred_rows, qual_rows = [], [], []
+
+    for subj, grp in wide_df.groupby("id"):
+        t = grp["time"].values.astype(float) / 12.0   # months → years
+
+        real_row = {"subject_id": subj}
+        pred_row = {"subject_id": subj}
+
+        for y_col, s_col in zip(y_cols, score_cols):
+            roi_id = int(y_col.split("_")[-1])
+            y_vals = grp[y_col].values.astype(float)
+            s_vals = grp[s_col].values.astype(float)
+            y_mask = ~np.isnan(y_vals)
+            s_mask = ~np.isnan(s_vals)
+
+            y_slope = (float(np.polyfit(t[y_mask], y_vals[y_mask], 1)[0])
+                       if y_mask.sum() >= 2 else np.nan)
+            s_slope = (float(np.polyfit(t[s_mask], s_vals[s_mask], 1)[0])
+                       if s_mask.sum() >= 2 else np.nan)
+
+            real_row[y_col] = y_slope
+            pred_row[y_col] = s_slope   # same col names as y_ for downstream consistency
+
+            qual_rows.append({
+                "subject_id":     subj,
+                "roi":            roi_id,
+                "real_slope":     y_slope,
+                "pred_slope":     s_slope,
+                "num_timepoints": int(y_mask.sum()),
+                "time_range":     (float(t[y_mask].max() - t[y_mask].min())
+                                   if y_mask.sum() >= 2 else np.nan),
+                "model":          "BrainGenFlow",
+            })
+
+        real_rows.append(real_row)
+        pred_rows.append(pred_row)
+
+    real_roc_df   = pd.DataFrame(real_rows)
+    pred_roc_df   = pd.DataFrame(pred_rows)
+    slope_qual_df = pd.DataFrame(qual_rows)
+    return baseline_df, real_roc_df, pred_roc_df, slope_qual_df
+
+
+def perform_statistical_comparison_braingen(
+        baseline_results: dict,
+        braingen_results: dict,
+        real_results: dict,
+        n_subj: int,
+        alpha: float = 0.05) -> dict:
+    """
+    DeLong's test for the three pairwise comparisons:
+        BrainGenFlow predicted RoC  vs  Baseline volumes
+        BrainGenFlow predicted RoC  vs  Real RoC (upper bound)
+        Real RoC (upper bound)      vs  Baseline volumes
+
+    Requires that all three evaluate_features() calls used the same subject
+    order and random_state so the pooled CV prediction vectors are aligned.
+    """
+    clf = BRAINGEN_CLASSIFIER
+
+    y_true_base = baseline_results[clf]['all_y_true']
+    y_true_bg   = braingen_results[clf]['all_y_true']
+    y_true_real = real_results[clf]['all_y_true']
+
+    assert np.array_equal(y_true_base, y_true_bg), \
+        "y_true mismatch: baseline vs BrainGenFlow — subject ordering changed?"
+    assert np.array_equal(y_true_base, y_true_real), \
+        "y_true mismatch: baseline vs Real RoC — subject ordering changed?"
+    y_true = y_true_bg
+
+    y_prob_base = baseline_results[clf]['all_y_prob']
+    y_prob_bg   = braingen_results[clf]['all_y_prob']
+    y_prob_real = real_results[clf]['all_y_prob']
+
+    comparisons = [
+        ("BrainGenFlow predicted RoC",  "Baseline volumes",        y_prob_bg,   y_prob_base),
+        ("BrainGenFlow predicted RoC",  "Real RoC (upper bound)",  y_prob_bg,   y_prob_real),
+        ("Real RoC (upper bound)",      "Baseline volumes",        y_prob_real, y_prob_base),
+    ]
+
+    print("\n" + "=" * 80)
+    print("DELONG'S TEST — BrainGenFlow feature comparisons")
+    print(f"Classifier : {clf}   |   n ≈ {n_subj} MCI subjects (pooled CV)")
+    print("=" * 80)
+
+    print("\n  AUC summary (mean [95 % CI], 5 folds):")
+    for label, res_dict in [("Real RoC (upper bound)",     real_results),
+                             ("BrainGenFlow predicted RoC", braingen_results),
+                             ("Baseline volumes",           baseline_results)]:
+        m, lo, hi = compute_95ci(res_dict[clf]['fold_aucs'])
+        print(f"    {label:<36}: {m:.4f}  [95% CI: {lo:.4f}, {hi:.4f}]")
+
+    delong_out = {}
+    for name_a, name_b, prob_a, prob_b in comparisons:
+        key = f"{name_a} vs {name_b}"
+        print(f"\n{'─' * 60}")
+        print(f"  {key}")
+        res = delong_test(y_true, prob_a, prob_b)
+        delong_out[key] = res
+        delta = res['auc_a'] - res['auc_b']
+        sig   = '✓ Yes' if res['significant'] else '✗ No'
+        print(f"  AUC ({name_a:<36}): {res['auc_a']:.4f}")
+        print(f"  AUC ({name_b:<36}): {res['auc_b']:.4f}")
+        print(f"  ΔAUC = {delta:+.4f}   z = {res['z_stat']:.3f}   "
+              f"p = {res['p_value']:.4e}   sig (α={alpha}): {sig}")
+
+    print(f"\n{'─' * 60}")
+    print("CONCLUSION")
+    for (name_a, name_b, _, _) in comparisons:
+        key = f"{name_a} vs {name_b}"
+        res = delong_out[key]
+        verdict = ("significantly outperforms" if res['significant']
+                   else "does not significantly outperform")
+        print(f"  {name_a} {verdict} {name_b} "
+              f"(ΔAUC={res['auc_a']-res['auc_b']:+.4f}, "
+              f"z={res['z_stat']:.3f}, p={res['p_value']:.4e})")
+
+    return delong_out
+
+
+# =============================================================================
+# MAIN — BrainGenFlow pipeline (merged_predictions_wide.csv only)
 # =============================================================================
 if __name__ == "__main__":
-    import pandas as pd
-    import numpy as np
-    from pathlib import Path
+    WIDE_CSV = "./trajectory_error_analysis/merged_predictions_wide.csv"
+    COV_CSV  = "./longitudinal_covariates_allstudies.csv"
+    OUT_DIR  = "./mciprogression"
+    LOG_FILE = os.path.join(OUT_DIR, "braingen_mci_progression_results.txt")
+    CACHE    = os.path.join(OUT_DIR, "braingen_mci_cache.pkl")
+    os.makedirs(OUT_DIR, exist_ok=True)
 
-    print("="*80)
-    print("MCI STABLE VS MCI PROGRESSOR CLASSIFICATION EXPERIMENT")
-    print("="*80)
-    print("Experiment Design:")
-    print("  - Target: Discriminate MCI Stable (1→1) vs MCI Progressor (1→2) subjects")
-    print("  - Features: Rate of change in 145 brain regions")
-    print("  - Models: RNN-AD predicted RoC vs DKGP predicted RoC")
-    print("  - Baseline: Static brain volumes")
-    print("  - Upper bound: Real rate of change (RNN-AD file)")
-    print(f"  - Stress-test: RNN-AD worst [{RNN_CLASSIFIER}] vs DKGP best [{DKGP_CLASSIFIER}]")
-    print("="*80)
-
-    # ── Paths ────────────────────────────────────────────────────────────────
-    RNN_IN_FILE   = Path(".csv")x
-    DKGP_IN_FILE  = Path("../LongGPRegressionBaseline/manuscript1/OldHarmonizedMUSEROIs.csv")
-    RNN_OUT_FILE  = Path("./manuscript1/rate_of_change_per_roi_rnnad.csv")
-    DKGP_OUT_FILE = Path("./manuscript1/rate_of_change_per_roi_dkgp.csv")
-
-    def ols_slope(t, v):
-        if len(t) < 2:
-            return np.nan
-        return np.polyfit(t, v, 1)[0]
-
-    # ── RNN-AD ───────────────────────────────────────────────────────────────
-    print("\n" + "="*80)
-    print("PROCESSING RNN-AD DATA")
-    print("="*80)
-
-    rnn_df = pd.read_csv(RNN_IN_FILE)
-    print(f"  Loaded: {len(rnn_df):,} rows, {rnn_df.shape[1]} columns")
-    print(f"  Time range: {rnn_df['time'].min():.1f} to {rnn_df['time'].max():.1f}")
-    print(f"  Unique subjects: {rnn_df['id'].nunique()}")
-    print(f"  Avg timepoints/subject: {len(rnn_df)/rnn_df['id'].nunique():.1f}")
-
-    rnn_y_cols     = sorted([c for c in rnn_df.columns if c.startswith("y_H_MUSE_Volume_")],
-                             key=lambda c: int(c.split("_")[-1]))
-    rnn_score_cols = sorted([c for c in rnn_df.columns if c.startswith("score_H_MUSE_Volume_")],
-                             key=lambda c: int(c.split("_")[-1]))
-    assert len(rnn_y_cols) == len(rnn_score_cols) == 145, \
-        "Expected 145 y_H_MUSE_Volume_ and 145 score_H_MUSE_Volume_ columns for RNN-AD"
-
-    rnn_roi_indices = [int(c.split("_")[-1]) for c in rnn_y_cols]
-
-    rnn_out = []
-    for roi_idx, y_col, s_col in zip(rnn_roi_indices, rnn_y_cols, rnn_score_cols):
-        sub_df = rnn_df[["id", "time", y_col, s_col]].dropna()
-        for subj, g in sub_df.groupby("id", sort=False):
-            t = g["time"].values.astype(float)
-            y = g[y_col].values.astype(float)
-            s = g[s_col].values.astype(float)
-            rnn_out.append({
-                "subject_id":         subj,
-                "roi":                roi_idx,
-                "real_slope":         ols_slope(t, y),
-                "pred_slope":         ols_slope(t, s),
-                "num_timepoints":     len(t),
-                "time_range":         (t.max() - t.min()) if len(t) else np.nan,
-                "real_initial_value": y[0] if len(y) else np.nan,
-                "pred_initial_value": s[0] if len(s) else np.nan,
-                "model":              "RNN-AD"
-            })
-
-    rnn_roc_df = pd.DataFrame(rnn_out)
-    rnn_roc_df.to_csv(RNN_OUT_FILE, index=False)
-    print(f"  RNN-AD RoC: {len(rnn_out):,} measurements, "
-          f"{rnn_roc_df['subject_id'].nunique()} subjects → {RNN_OUT_FILE}")
-
-    # ── DKGP ─────────────────────────────────────────────────────────────────
-    print("\n" + "="*80)
-    print("PROCESSING DKGP DATA")
-    print("="*80)
-
-    dkgp_df = pd.read_csv(DKGP_IN_FILE)
-    print(f"  Loaded: {len(dkgp_df):,} rows, {dkgp_df.shape[1]} columns")
-    print(f"  Time range: {dkgp_df['time'].min():.1f} to {dkgp_df['time'].max():.1f}")
-    print(f"  Unique subjects: {dkgp_df['id'].nunique()}")
-
-    dkgp_y_cols     = sorted([c for c in dkgp_df.columns if c.startswith("y_H_MUSE_Volume_")],
-                              key=lambda c: int(c.split("_")[-1]))
-    dkgp_score_cols = sorted([c for c in dkgp_df.columns if c.startswith("score_H_MUSE_Volume_")],
-                              key=lambda c: int(c.split("_")[-1]))
-
-    nan_mask     = dkgp_df[dkgp_y_cols + dkgp_score_cols].isnull().any(axis=1)
-    bad_rows     = dkgp_df[nan_mask]
-    bad_subjects = bad_rows['id'].unique().tolist()
-    print(f"  Rows with NaN volumes: {len(bad_rows)}")
-    print(f"  Subjects with NaN volumes: {len(bad_subjects)}")
-    print(f"  Bad subject IDs: {bad_subjects}")
-    dkgp_df = dkgp_df[~dkgp_df['id'].isin(bad_subjects)]
-
-    assert len(dkgp_y_cols) == len(dkgp_score_cols) == 145, \
-        "Expected 145 y_H_MUSE_Volume_ and 145 score_H_MUSE_Volume_ columns for DKGP"
-
-    dkgp_roi_indices = [int(c.split("_")[-1]) for c in dkgp_y_cols]
-
-    dkgp_out = []
-    for roi_idx, y_col, s_col in zip(dkgp_roi_indices, dkgp_y_cols, dkgp_score_cols):
-        sub_df = dkgp_df[["id", "time", y_col, s_col]].dropna()
-        for subj, g in sub_df.groupby("id", sort=False):
-            t = g["time"].values.astype(float)
-            y = g[y_col].values.astype(float)
-            s = g[s_col].values.astype(float)
-            dkgp_out.append({
-                "subject_id":         subj,
-                "roi":                roi_idx,
-                "real_slope":         ols_slope(t, y),
-                "pred_slope":         ols_slope(t, s),
-                "num_timepoints":     len(t),
-                "time_range":         (t.max() - t.min()) if len(t) else np.nan,
-                "real_initial_value": y[0] if len(y) else np.nan,
-                "pred_initial_value": s[0] if len(s) else np.nan,
-                "model":              "DKGP"
-            })
-
-    dkgp_roc_df = pd.DataFrame(dkgp_out)
-    dkgp_roc_df.to_csv(DKGP_OUT_FILE, index=False)
-    print(f"  DKGP RoC: {len(dkgp_out):,} measurements, "
-          f"{dkgp_roc_df['subject_id'].nunique()} subjects → {DKGP_OUT_FILE}")
-
-    # ── BrainGenFlow ─────────────────────────────────────────────────────────
-    print("\n" + "="*80)
-    print("PROCESSING BRAINGEN FLOW DATA")
-    print("="*80)
-
-    BRAINGEN_PREDICTIONS_DIR = Path('./predictions')
-    braingen_roc_df = load_braingen_predictions(BRAINGEN_PREDICTIONS_DIR)
-    if len(braingen_roc_df) > 0:
-        braingen_roc_df.to_csv(
-            Path('./manuscript1/rate_of_change_per_roi_braingen.csv'), index=False
-        )
-        print(f"  BrainGenFlow RoC saved → ./manuscript1/rate_of_change_per_roi_braingen.csv")
-    else:
-        print("  Warning: no BrainGenFlow trajectories loaded — skipping.")
-
-    # ── Combine & run ────────────────────────────────────────────────────────
-    combined_roc_df = pd.concat(
-        [rnn_roc_df, dkgp_roc_df, braingen_roc_df], ignore_index=True
-    )
-    print(f"\nCombined: {len(combined_roc_df):,} total measurements "
-          f"({combined_roc_df['model'].value_counts().to_dict()})")
-
-    covariates_df = pd.read_csv(
-        '/home/cbica/Desktop/LongGPClustering/data1/'
-        'longitudinal_covariates_subjectsamples_longclean_hmuse_convs_allstudies.csv'
-    )
-    print(f"Covariates: {len(covariates_df):,} rows, {covariates_df['PTID'].nunique()} subjects")
-
-    baseline_df = load_baseline_volumes()
-
-    analyze_progressor_classification(combined_roc_df, covariates_df, baseline_df)
-
-
-# ── Plot-only mode: regenerate figure from cached results ────────────────────
-# Usage: python manuscript1_mci_roc_corrected.py --plot-only
-if __name__ == '__plot_only__' or (
-        __name__ == '__main__' and
-        len(__import__('sys').argv) > 1 and
-        __import__('sys').argv[1] == '--plot-only'):
     import sys
-    CACHE_PATH = './manuscript1/mci_classification_results_cache.pkl'
-    if not os.path.exists(CACHE_PATH):
-        print(f"✗ Cache not found at {CACHE_PATH}. Run the full script first.")
+
+    class _Tee:
+        def __init__(self, path):
+            self._f   = open(path, "w")
+            self._out = sys.__stdout__
+        def write(self, s):
+            self._out.write(s); self._f.write(s)
+        def flush(self):
+            self._out.flush(); self._f.flush()
+        def close(self):
+            self._f.close()
+
+    tee = _Tee(LOG_FILE)
+    sys.stdout = tee
+
+    try:
+        print("=" * 80)
+        print("MCI STABLE VS MCI PROGRESSOR CLASSIFICATION EXPERIMENT")
+        print("=" * 80)
+        print("Experiment Design:")
+        print("  - Target: Discriminate MCI Stable (MCI→MCI) vs MCI Progressor (MCI→AD)")
+        print("  - Data source: merged_predictions_wide.csv (BrainGenFlow outputs)")
+        print("  - Feature sets compared:")
+        print("      A. Baseline volumes     — 145 y_ ROIs at time=0")
+        print("      B. Real RoC             — OLS slope of y_ across observed timepoints")
+        print("      C. BrainGenFlow pred RoC — OLS slope of score_ across observed timepoints")
+        print(f"  - Classifier: {BRAINGEN_CLASSIFIER}  (5-fold nested CV + inner 3-fold GridSearchCV)")
+        print("=" * 80)
+
+        # ── 1. Load merged predictions ────────────────────────────────────────
+        print("\n[1] Loading merged_predictions_wide.csv ...")
+        wide = pd.read_csv(WIDE_CSV)
+        print(f"  {len(wide):,} rows | {wide['id'].nunique()} subjects "
+              f"| time {wide['time'].min():.0f}–{wide['time'].max():.0f} months")
+
+        # ── 2. Extract feature matrices ───────────────────────────────────────
+        print("\n[2] Extracting feature matrices ...")
+        baseline_df, real_roc_df, pred_roc_df, slope_qual_df = \
+            compute_features_from_wide(wide)
+        print(f"  Baseline (time=0):     {len(baseline_df)} subjects")
+        print(f"  Real RoC (OLS y_):     {len(real_roc_df)} subjects")
+        print(f"  Pred RoC (OLS score_): {len(pred_roc_df)} subjects")
+
+        # ── 3. BrainGenFlow slope quality ─────────────────────────────────────
+        print("\n[3] BrainGenFlow slope quality (real vs predicted) ...")
+        analyze_slope_quality(slope_qual_df)
+
+        # ── 4. Progression labels ─────────────────────────────────────────────
+        print("\n[4] Building MCI progression labels from covariates ...")
+        cov     = pd.read_csv(COV_CSV)
+        prog_df = build_progression_labels(cov)
+        print(f"  MCI subjects with labels : {len(prog_df)}")
+        print(f"  Progressors   (MCI→AD)   : {prog_df['is_progressor'].sum()}")
+        print(f"  Non-progressors (MCI→MCI): {(prog_df['is_progressor'] == 0).sum()}")
+
+        # ── 5. Intersect subjects across all sets ─────────────────────────────
+        print("\n[5] Intersecting subjects across all feature sets ...")
+        common = (
+            set(baseline_df["subject_id"])
+            & set(real_roc_df["subject_id"])
+            & set(pred_roc_df["subject_id"])
+            & set(prog_df["PTID"])
+        )
+        print(f"  Common subjects: {len(common)}")
+
+        def _fs(df, id_col):
+            return (df[df[id_col].isin(common)]
+                    .sort_values(id_col).reset_index(drop=True))
+
+        baseline_df = _fs(baseline_df, "subject_id")
+        real_roc_df = _fs(real_roc_df, "subject_id")
+        pred_roc_df = _fs(pred_roc_df, "subject_id")
+        prog_df     = _fs(prog_df,     "PTID")
+
+        y_labels = prog_df["is_progressor"].values
+        n_subj   = len(y_labels)
+
+        assert np.array_equal(baseline_df["subject_id"].values, prog_df["PTID"].values), \
+            "Label alignment failed: baseline vs prog_df"
+        assert np.array_equal(real_roc_df["subject_id"].values, prog_df["PTID"].values), \
+            "Label alignment failed: real_roc vs prog_df"
+        assert np.array_equal(pred_roc_df["subject_id"].values, prog_df["PTID"].values), \
+            "Label alignment failed: pred_roc vs prog_df"
+        print("  Label alignment verified ✓")
+        print(f"  Final cohort: {n_subj} subjects  "
+              f"({y_labels.sum()} progressors, "
+              f"{(y_labels == 0).sum()} non-progressors, "
+              f"{y_labels.mean() * 100:.1f}% progression rate)")
+
+        feat_cols   = [c for c in baseline_df.columns if c != "subject_id"]
+        X_baseline  = baseline_df[feat_cols].values
+        X_real_roc  = real_roc_df[feat_cols].fillna(0).values
+        X_pred_roc  = pred_roc_df[feat_cols].fillna(0).values
+
+        # ── 6. Evaluate all three feature sets ────────────────────────────────
+        print("\n[6] Evaluating feature sets (5-fold nested CV) ...")
+        baseline_results = evaluate_features(
+            X_baseline, y_labels, "Baseline volumes (y_ at t=0)")
+        real_results     = evaluate_features(
+            X_real_roc,  y_labels, "Real RoC (upper bound)")
+        braingen_results = evaluate_features(
+            X_pred_roc,  y_labels, "BrainGenFlow predicted RoC")
+
+        # Cache for plot-only re-runs
+        with open(CACHE, "wb") as fh:
+            pickle.dump({
+                "baseline_results": baseline_results,
+                "real_results":     real_results,
+                "braingen_results": braingen_results,
+                "n_subj":           n_subj,
+            }, fh)
+        print(f"\n  Results cached → {CACHE}")
+
+        # ── 7. ROC figure ─────────────────────────────────────────────────────
+        print("\n[7] Generating ROC figure ...")
+        plot_comprehensive_roc_curves(
+            baseline_results      = baseline_results,
+            rnn_pred_results      = None,
+            dkgp_pred_results     = None,
+            real_results          = real_results,
+            save_prefix           = "braingen_mci_progression",
+            braingen_pred_results = braingen_results,
+        )
+
+        # ── 8. DeLong pairwise comparison ─────────────────────────────────────
+        print("\n[8] Statistical comparison (DeLong's test) ...")
+        perform_statistical_comparison_braingen(
+            baseline_results = baseline_results,
+            braingen_results = braingen_results,
+            real_results     = real_results,
+            n_subj           = n_subj,
+        )
+
+        # ── 9. Comprehensive metrics table ────────────────────────────────────
+        clf  = BRAINGEN_CLASSIFIER
+        sets = [
+            ("Real RoC (upper bound)",      real_results[clf]),
+            ("BrainGenFlow predicted RoC",  braingen_results[clf]),
+            ("Baseline volumes",            baseline_results[clf]),
+        ]
+        metrics = [
+            ("roc_auc",   "AUC-ROC"),
+            ("pr_auc",    "AUC-PR"),
+            ("accuracy",  "Accuracy"),
+            ("precision", "Precision"),
+            ("recall",    "Recall"),
+            ("f1",        "F1"),
+            ("fdr",       "FDR"),
+            ("fpr_stat",  "FPR"),
+        ]
+        W = 26
+        print(f"\n{'=' * 80}")
+        print(f"COMPREHENSIVE METRICS  (mean ± std, {clf}, 5 folds)")
+        print(f"{'=' * 80}")
+        print(f"\n  {'Metric':<12}", end="")
+        for name, _ in sets:
+            print(f"  {name:<{W}}", end="")
+        print()
+        print("  " + "─" * (12 + (W + 2) * len(sets)))
+        for key, label in metrics:
+            print(f"  {label:<12}", end="")
+            for _, r in sets:
+                val  = r.get(key, float("nan"))
+                std_key = f"{key}_std"
+                cell = (f"{val:.3f}±{r[std_key]:.3f}" if std_key in r
+                        else f"{val:.3f}")
+                print(f"  {cell:<{W}}", end="")
+            print()
+
+        # Delta: BrainGenFlow predicted RoC vs other two
+        bg_r   = braingen_results[clf]
+        real_r = real_results[clf]
+        base_r = baseline_results[clf]
+        print(f"\n  Delta  BrainGenFlow − Baseline:")
+        for key, label in metrics:
+            bv = bg_r.get(key, float("nan"))
+            bsv = base_r.get(key, float("nan"))
+            if not (np.isnan(bv) or np.isnan(bsv)):
+                print(f"    {label:<14}: {bv - bsv:+.3f}  "
+                      f"{'↑' if bv > bsv else '↓'}")
+        print(f"\n  Delta  BrainGenFlow − Real RoC (upper bound):")
+        for key, label in metrics:
+            bv = bg_r.get(key, float("nan"))
+            rv = real_r.get(key, float("nan"))
+            if not (np.isnan(bv) or np.isnan(rv)):
+                print(f"    {label:<14}: {bv - rv:+.3f}  "
+                      f"{'↑' if bv > rv else '↓'}")
+
+        print(f"\n{'=' * 80}")
+        print("DONE — outputs in", OUT_DIR)
+        print(f"{'=' * 80}")
+
+    finally:
+        sys.stdout = sys.__stdout__
+        tee.close()
+        print(f"\nResults logged → {LOG_FILE}")
+
+
+# ── Plot-only mode: regenerate figures from cached results ───────────────────
+# Usage: python mci_progression_prediction.py --plot-only
+if __name__ == "__main__" and len(__import__('sys').argv) > 1 \
+        and __import__('sys').argv[1] == '--plot-only':
+    import sys, pickle
+    CACHE = "./mciprogression/braingen_mci_cache.pkl"
+    if not os.path.exists(CACHE):
+        print(f"✗ Cache not found at {CACHE}. Run the full script first.")
         sys.exit(1)
-    print(f"Loading cached results from {CACHE_PATH} ...")
-    with open(CACHE_PATH, 'rb') as f:
-        cache = pickle.load(f)
-    os.makedirs('./miccai26', exist_ok=True)
+    print(f"Loading cached results from {CACHE} ...")
+    with open(CACHE, "rb") as fh:
+        cache = pickle.load(fh)
+    os.makedirs("./mciprogression", exist_ok=True)
     plot_comprehensive_roc_curves(
-        cache['baseline_results'],
-        cache['pred_rnn_results'],
-        cache['pred_dkgp_results'],
-        cache['real_results'],
-        save_prefix='mci_stable_vs_progressor',
-        braingen_pred_results=cache.get('pred_braingen_results')
+        baseline_results      = cache["baseline_results"],
+        rnn_pred_results      = None,
+        dkgp_pred_results     = None,
+        real_results          = cache["real_results"],
+        save_prefix           = "braingen_mci_progression",
+        braingen_pred_results = cache["braingen_results"],
     )
-    print("Done. Check ./miccai26/ for updated figures.")
+    print("Done. Check ./mciprogression/ for updated figures.")
