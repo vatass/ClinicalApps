@@ -3,20 +3,112 @@ import pandas as pd
 import seaborn as sns
 from scipy import stats
 import pickle
-import sys, os 
+import sys, os, re
 from os.path import exists
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import figure
 import matplotlib.pyplot as plt
 from operator import add
 import argparse
-from functions import process_temporal_singletask_data
 import statsmodels.formula.api as smf
 from io import StringIO
 import contextlib
 from statsmodels.stats.multitest import multipletests
 
-resultsdir = '/home/cbica/Desktop/LongGPClustering/'
+# ---------------------------------------------------------------------------
+# Paths — all relative to the ClinicalApps working directory
+# ---------------------------------------------------------------------------
+PRED_DIR   = './predictions'
+COV_FILE   = './longitudinal_covariates_allstudies.csv'
+HMUSE_FILE = './hmuse_list.npy'
+OUT_DIR    = './staging_results'
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# MCI diagnosis sets for deriving progression labels
+# ---------------------------------------------------------------------------
+MCI_DIAGNOSES = {
+    'MCI',
+    'MCI Amnestic Single Domain (Petersen Criteria)',
+    'MCI Amnestic Plus Other (Petersen Criteria)',
+    'MCI Non-Amnestic Single Domain (Petersen Criteria)',
+    'MCI Non-Amnestic Multiple Domains (Petersen Criteria)',
+    'MCI - mixed vascular & AD',
+}
+AD_DIAGNOSES = {
+    'AD', 'Dementia', 'AD Dementia', 'AD patient',
+    'AD Probable (NINCDS/ADRDA)', 'AD dem w/depresss  not contribut',
+    'uncertain  possible NON AD dem', 'Dementia NOS',
+}
+
+# ---------------------------------------------------------------------------
+# Load BrainGenFlow fold predictions for one ROI list-index.
+#
+# Fold file format (trajectory_<PTID>_fold<N>.csv):
+#   ROI column : '<roi_idx>_real' (sparse, NaN where unobserved)
+#                '<roi_idx>_gen'  (dense, predicted every month)
+#   Month cols : Month_0 … Month_69
+#
+# Returns a DataFrame with columns:
+#   id    – subject PTID
+#   time  – month index (int), only at rows where real is observed
+#   y     – observed (real) value
+#   score – BrainGenFlow predicted (_gen) value at the same timepoint
+# ---------------------------------------------------------------------------
+def load_braingenflow_roi_data(pred_dir, roi_list_idx):
+    fold_pat  = re.compile(r'^trajectory_(.+)_fold(\d+)\.csv$')
+    csv_files = sorted(
+        f for f in os.listdir(pred_dir)
+        if fold_pat.match(f)
+    )
+
+    month_re  = re.compile(r'^Month_(\d+)$')
+    rows = []
+    for fname in csv_files:
+        m = fold_pat.match(fname)
+        ptid = m.group(1)
+        df = pd.read_csv(os.path.join(pred_dir, fname))
+
+        real_key = f'{roi_list_idx}_real'
+        gen_key  = f'{roi_list_idx}_gen'
+        if real_key not in df['ROI'].values or gen_key not in df['ROI'].values:
+            continue
+
+        real_row = df[df['ROI'] == real_key].iloc[0]
+        gen_row  = df[df['ROI'] == gen_key].iloc[0]
+
+        month_cols = [c for c in df.columns if month_re.match(c)]
+        for col in month_cols:
+            real_val = real_row[col]
+            if pd.isna(real_val):
+                continue   # not an observed timepoint
+            month = int(month_re.match(col).group(1))
+            rows.append({
+                'id':    ptid,
+                'time':  month,
+                'y':     float(real_val),
+                'score': float(gen_row[col]),
+            })
+
+    return pd.DataFrame(rows)
+
+# ---------------------------------------------------------------------------
+# Derive progressor / non-progressor subject lists from covariates CSV.
+# Returns two lists of PTIDs: (progressor_ids, nonprogressor_ids)
+# ---------------------------------------------------------------------------
+def derive_progression_labels(cov_file):
+    cov = pd.read_csv(cov_file)
+    progressors, non_progressors = [], []
+    for ptid, grp in cov.groupby('PTID'):
+        grp   = grp.sort_values('Time')
+        diags = grp['Diagnosis'].tolist()
+        if diags[0] not in MCI_DIAGNOSES:
+            continue
+        if any(d in AD_DIAGNOSES for d in diags[1:]):
+            progressors.append(ptid)
+        else:
+            non_progressors.append(ptid)
+    return progressors, non_progressors
 
 font_size = 20
 # from statannotations.Annotator import Annotator
@@ -38,11 +130,8 @@ plt.rcParams['xtick.color'] = 'black'
 plt.rcParams['ytick.color'] = 'black'
 
 parser = argparse.ArgumentParser(description='Plots for Staging Analysis')
-## Data Parameters 
-parser.add_argument("--datasets", help="GPUs", default='')
-
+parser.add_argument("--datasets", help="dataset tag (unused, kept for compatibility)", default='')
 args = parser.parse_args()
-datasets = args.datasets
 
 # Function to capture model summary output
 def capture_model_summary(model_fit):
@@ -53,7 +142,7 @@ def capture_model_summary(model_fit):
     return f.getvalue()
 
 # Initialize results file
-results_file = './manuscript1/LMM_results_bonferroni.txt'
+results_file = os.path.join(OUT_DIR, 'LMM_results_bonferroni.txt')
 with open(results_file, 'w') as f:
     f.write("LMM Model Results for Staging Analysis (with Bonferroni Correction)\n")
     f.write("=" * 70 + "\n\n")
@@ -77,21 +166,20 @@ for i, r in enumerate(roi_idxs):
         f.write(f"\nROI: {roi_names[i]} (Index: {r})\n")
         f.write("-" * 30 + "\n")
 
-    # data_predicted = pd.read_csv(resultsdir + 'baselineonlyresults/singletask_'  + str(r) + '_dkgp_population_'+ datasets+'.csv')
+    # Load BrainGenFlow predictions for this ROI (list index r)
+    data_predicted = load_braingenflow_roi_data(PRED_DIR, r)
+    print(f'  BrainGenFlow data for ROI {roi_names[i]} (list idx {r}): '
+          f'{len(data_predicted)} rows, {data_predicted["id"].nunique()} subjects')
 
-    data_predicted = pd.read_csv('./manuscript1/singletask_MUSE_'+ str(r) + '_dkgp_population_allstudies.csv')
-
-    for c in data_predicted.columns: 
-        print(c) 
-
-    # data_predicted = pd.read_csv('./oldresults/person_lr_'+ datasets +'.csv')
-    data_nonprogressor =  pd.read_csv('/home/cbica/Desktop/LongGPClustering/ADNINonConverters.csv')
-    data_progressor = pd.read_csv('/home/cbica/Desktop/LongGPClustering/ADNIConverters.csv')
+    # Derive progressor / non-progressor labels from the covariates file
+    all_progressor_ids, all_nonprogressor_ids = derive_progression_labels(COV_FILE)
+    # Wrap in DataFrames to match the downstream .unique() / .isin() usage
+    data_progressor    = pd.DataFrame({'PTID': all_progressor_ids})
+    data_nonprogressor = pd.DataFrame({'PTID': all_nonprogressor_ids})
 
     predicted_data_ids = list(data_predicted['id'].unique()) 
 
-    # longitudinal_covariates = pd.read_csv(resultsdir + 'data2/longitudinal_covariates_subjectsamples_longclean_hmuse_convs_adniblsa.csv')
-    longitudinal_covariates = pd.read_csv('longitudinal_covariates_subjectsamples_longclean_hmuse_convs_allstudies.csv')
+    longitudinal_covariates = pd.read_csv(COV_FILE)
 
     # data_predicted = data_predicted[data_predicted['ROI'] == 'H_MUSE_Volume_' + str(roi_idxs[i])]
     # data_predicted = data_predicted[data_predicted['kfold'] == 0]
@@ -241,8 +329,8 @@ for i, r in enumerate(roi_idxs):
     plt.title('Noisy Measurements', fontdict=font)
     # plt.legend(by_label.values(), by_label.keys(), loc='upper left', bbox_to_anchor=(0.95,0.95), fontsize=font_size)  # Displaying only unique labels
     plt.legend(by_label.values(), by_label.keys(), loc='upper left',fontsize=19)
-    plt.savefig('./manuscript1/real_staging_plot_' + roi_names[i]  + '.png')
-    plt.savefig('./manuscript1/real_staging_plot_' + roi_names[i]  + '.svg', format='svg')
+    plt.savefig(os.path.join(OUT_DIR, 'real_staging_plot_' + roi_names[i] + '.png'))
+    plt.savefig(os.path.join(OUT_DIR, 'real_staging_plot_' + roi_names[i] + '.svg'), format='svg')
 
 
     plt.figure(figsize=(10,7), dpi=400)
@@ -291,8 +379,8 @@ for i, r in enumerate(roi_idxs):
     # plt.legend(by_label.values(), by_label.keys(), loc='upper left', bbox_to_anchor=(0.95,0.95))  # Displaying only unique labels
     #plt.legend(by_label.values(), by_label.keys(), loc='upper left',fontsize=19)
     plt.legend().remove()
-    plt.savefig('./manuscript1/real_age_staging_plot_' + roi_names[i]  + '.png')
-    plt.savefig('./manuscript1/real_age_staging_plot_' + roi_names[i]  + '.svg', format='svg')
+    plt.savefig(os.path.join(OUT_DIR, 'real_age_staging_plot_' + roi_names[i] + '.png'))
+    plt.savefig(os.path.join(OUT_DIR, 'real_age_staging_plot_' + roi_names[i] + '.svg'), format='svg')
 
 
     # Fit a LMM to see if there is a signal that indicates conversion to AD on real data 
@@ -427,8 +515,8 @@ for i, r in enumerate(roi_idxs):
     # plt.legend(by_label.values(), by_label.keys(), loc='upper left', bbox_to_anchor=(0.95,0.95), fontsize=19)  # Displaying only unique labels
     #plt.legend(by_label.values(), by_label.keys(), loc='upper left',fontsize=19)
     plt.legend().remove()
-    plt.savefig('./manuscript1/predicted_staging_plot_' + roi_names[i]  + '.png')
-    plt.savefig('./manuscript1/predicted_staging_plot_' + roi_names[i]  + '.svg', format='svg')
+    plt.savefig(os.path.join(OUT_DIR, 'predicted_staging_plot_' + roi_names[i] + '.png'))
+    plt.savefig(os.path.join(OUT_DIR, 'predicted_staging_plot_' + roi_names[i] + '.svg'), format='svg')
 
 
 
@@ -479,8 +567,8 @@ for i, r in enumerate(roi_idxs):
     # plt.legend(by_label.values(), by_label.keys(), loc='upper left', bbox_to_anchor=(0.95,0.95), fontsize=19)  # Displaying only unique labels
     #plt.legend(by_label.values(), by_label.keys(), loc='upper left',fontsize=19)
     plt.legend().remove()
-    plt.savefig('./manuscript1/predicted_age_staging_plot_' + roi_names[i]  + '.png')
-    plt.savefig('./manuscript1/predicted_age_staging_plot_' + roi_names[i]  + '.svg', format='svg')
+    plt.savefig(os.path.join(OUT_DIR, 'predicted_age_staging_plot_' + roi_names[i] + '.png'))
+    plt.savefig(os.path.join(OUT_DIR, 'predicted_age_staging_plot_' + roi_names[i] + '.svg'), format='svg')
 
 
     # # Fit a LMM to see if there is a signal that indicates conversion to AD on real data 
