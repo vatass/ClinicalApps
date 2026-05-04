@@ -1,247 +1,200 @@
 '''
-Merge per-subject trajectory prediction files (RNN-AD and MLP) with real
-observed brain volumes into OldHarmonizedMUSEROIs format:
+Consolidate RNN and MLP baseline predictions into OldHarmonizedMUSEROIs format:
 
-    id, time, fold, y_H_MUSE_Volume_<roi>, ..., score_H_MUSE_Volume_<roi>, ...
+    id, time, fold, y_H_MUSE_Volume_<roi_id>, ..., score_H_MUSE_Volume_<roi_id>, ...
 
-Input prediction directory layout:
+Input layout (baselines/):
     baselines/
-        rnn/fold_0/trajectory_ptid_*.csv
-            fold_1/trajectory_ptid_*.csv  …
-        mlp/fold_0/trajectory_ptid_*.csv
-            fold_1/trajectory_ptid_*.csv  …
-    Rows  : one per ROI (0-indexed in ROI_Index column, 145 total)
-    Cols  : Month_0, Month_1, ..., Month_N  (integer month offsets from baseline)
+        rnn/fold_0/  test_predictions.npy  (N_visits × 145, float32)
+                     test_targets.npy      (N_visits × 145, float32)
+                     subject_ids.json      list[str] length N_visits
+        mlp/fold_0/  test_predictions.npy
+                     test_targets.npy
+                     test_ptids.json       list[str] length N_visits
+                     stats.json            {mean: [...], std: [...]}  length 145+
 
-Real-values reference CSV (REAL_VALUES_FILE):
-    Must have columns: id (or PTID), time (months from baseline),
-    y_H_MUSE_Volume_<roi_id> for each of the 145 ROIs.
+    For MLP: predictions and targets are z-scored using per-fold stats.json.
+             De-normalization is applied: value = z * std[:145] + mean[:145].
+    For RNN: no stats file — values are used as-is (same scale as OldHarmonizedMUSEROIs).
 
 Time alignment:
-    Real visits have integer month offsets. For each visit at month t,
-    the prediction is extracted from Month_<t> in the trajectory file.
-    If a subject's trajectory does not cover month t, that visit is skipped.
+    OldHarmonizedMUSEROIs.csv is the reference for time values.
+    For each subject, its visits are sorted by time in the reference CSV.
+    The i-th occurrence of a PTID in the subject-ID list maps to the i-th
+    (time-sorted) visit of that subject in the reference.
 
-Usage:
-    python merge_predictions.py
-    Edit the CONFIGURATION block below to point at your data.
+ROI mapping:
+    hmuse_list.npy: position i → MUSE Volume ID.
+    Column i in the prediction arrays → y/score_H_MUSE_Volume_<hmuse[i]>.
 '''
 
-import os
-import re
+import json
 import sys
 import warnings
+from collections import defaultdict
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# CONFIGURATION — edit these paths before running
+# CONFIGURATION
 # =============================================================================
 
-# Directory with fold_<N>/ subdirectories for each model
-RNNAD_PRED_DIR = Path('./baselines/rnn')
-MLP_PRED_DIR   = Path('./baselines/mlp')
+BASELINES_DIR    = Path('./baselines')
+REF_CSV          = Path('./OldHarmonizedMUSEROIs.csv')   # time reference
+HMUSE_FILE       = Path('./hmuse_list.npy')              # ROI index → MUSE ID
 
-# CSV with real observed brain volumes at each visit.
-# Required columns: id (or PTID), time (months from baseline),
-#                   y_H_MUSE_Volume_<roi_id> for each ROI.
-REAL_VALUES_FILE = Path('./manuscript1/HarmonizedROIVolumes.csv')
-
-# Maps 0-based ROI list index → actual MUSE Volume ID.
-# If absent, column names fall back to y_H_MUSE_Volume_0, y_H_MUSE_Volume_1, …
-HMUSE_FILE = Path('./hmuse_list.npy')
-
-# Output files
-OUT_RNNAD = Path('./merged_rnnad.csv')
-OUT_MLP   = Path('./merged_mlp.csv')
+OUT_RNN = Path('./merged_rnn.csv')
+OUT_MLP = Path('./merged_mlp.csv')
 
 # =============================================================================
 
 
-def build_roi_id_map(hmuse_path: Path, n_rois: int) -> dict:
-    '''Return {list_index: muse_volume_id}. Falls back to identity map.'''
+def load_roi_ids(hmuse_path: Path, n_rois: int) -> list[int]:
+    '''Return ordered list of MUSE Volume IDs (length n_rois).'''
     if hmuse_path.exists():
         hmuse = np.load(str(hmuse_path), allow_pickle=True)
-        print(f'  hmuse_list.npy loaded → {len(hmuse)} entries')
-        return {i: int(hmuse[i]) for i in range(min(n_rois, len(hmuse)))}
-    print(f'  hmuse_list.npy not found — ROI column index used as MUSE Volume ID')
-    return {i: i for i in range(n_rois)}
+        ids = [int(hmuse[i]) for i in range(min(n_rois, len(hmuse)))]
+        print(f'  hmuse_list.npy → {len(ids)} ROI IDs')
+        return ids
+    print(f'  hmuse_list.npy not found — using 0-based indices as ROI IDs')
+    return list(range(n_rois))
 
 
-def load_real_values(real_file: Path) -> pd.DataFrame:
+def load_reference_times(ref_csv: Path) -> dict[str, list[float]]:
     '''
-    Load the real observed brain volumes CSV. Normalises the subject-ID
-    column to "id" and the time column to "time" (months).
+    Return {ptid: [time_0, time_1, ...]} sorted ascending from
+    OldHarmonizedMUSEROIs.csv.  Used to recover the time for each
+    (ptid, visit_index) pair.
     '''
-    df = pd.read_csv(str(real_file))
-
-    # Normalise subject-ID column name
-    for col in df.columns:
-        if col.strip().upper() in ('PTID', 'ID', 'SUBJECT_ID', 'SUBJECTID'):
-            df = df.rename(columns={col: 'id'})
-            break
-    if 'id' not in df.columns:
-        raise ValueError(
-            f'Could not find a subject-ID column in {real_file}. '
-            'Expected one of: id, PTID, subject_id, subjectid.'
-        )
-
-    # Normalise time column name
-    for col in df.columns:
-        if col.strip().upper() in ('TIME', 'VISIT_TIME', 'MONTH', 'MONTHS'):
-            df = df.rename(columns={col: 'time'})
-            break
-    if 'time' not in df.columns:
-        raise ValueError(
-            f'Could not find a time column in {real_file}. '
-            'Expected one of: time, Time, visit_time, month, months.'
-        )
-
-    y_cols = [c for c in df.columns if c.startswith('y_H_MUSE_Volume_')]
-    if not y_cols:
-        raise ValueError(
-            f'No y_H_MUSE_Volume_* columns found in {real_file}.'
-        )
-
-    print(f'  Real values: {len(df):,} rows, {df["id"].nunique()} subjects, '
-          f'{len(y_cols)} ROI columns')
-    return df
+    print(f'  Loading reference times from {ref_csv} ...')
+    ref = pd.read_csv(str(ref_csv), usecols=['id', 'time'])
+    times = {}
+    for ptid, grp in ref.groupby('id'):
+        times[str(ptid)] = sorted(grp['time'].tolist())
+    print(f'  Reference: {len(times)} subjects')
+    return times
 
 
-def load_trajectory(fpath: Path) -> dict | None:
+def load_fold(fold_dir: Path, ptid_file: str) -> tuple:
     '''
-    Read one trajectory_ptid_*.csv file.
-    Returns {roi_index: {month: value}} or None on error.
+    Load one fold's arrays and subject IDs.
+
+    Returns (ptids, targets, predictions, mean_or_None, std_or_None).
+    targets and predictions have shape (N_visits, N_rois).
+    mean/std are 1-D arrays of length >= N_rois, or None if no stats.json.
     '''
-    try:
-        df = pd.read_csv(str(fpath))
-    except Exception as exc:
-        print(f'    WARNING: could not read {fpath.name}: {exc}')
-        return None
+    preds   = np.load(str(fold_dir / 'test_predictions.npy'))
+    targets = np.load(str(fold_dir / 'test_targets.npy'))
 
-    if 'ROI_Index' not in df.columns:
-        print(f'    WARNING: no ROI_Index column in {fpath.name}, skipping')
-        return None
+    with open(fold_dir / ptid_file) as f:
+        ptids = json.load(f)
 
-    month_cols = [c for c in df.columns if re.match(r'^Month_\d+$', c)]
-    if not month_cols:
-        print(f'    WARNING: no Month_* columns in {fpath.name}, skipping')
-        return None
+    assert len(ptids) == len(preds) == len(targets), (
+        f'{fold_dir}: length mismatch — ptids {len(ptids)}, '
+        f'preds {preds.shape}, targets {targets.shape}'
+    )
 
-    month_indices = [int(c.split('_')[1]) for c in month_cols]
+    mean = std = None
+    stats_path = fold_dir / 'stats.json'
+    if stats_path.exists():
+        with open(stats_path) as f:
+            stats = json.load(f)
+        mean = np.array(stats['mean'], dtype=np.float64)
+        std  = np.array(stats['std'],  dtype=np.float64)
 
-    trajectories = {}
-    for _, row in df.iterrows():
-        roi_idx = int(row['ROI_Index'])
-        trajectories[roi_idx] = {
-            m: float(row[col])
-            for m, col in zip(month_indices, month_cols)
-        }
-    return trajectories
+    return ptids, targets, preds, mean, std
 
 
-def merge_model_predictions(
-    pred_dir: Path,
-    real_df: pd.DataFrame,
-    roi_id_map: dict,
-    model_label: str,
+def build_merged_df(
+    model_dir: Path,
+    ptid_file: str,
+    ref_times: dict[str, list[float]],
+    roi_ids: list[int],
 ) -> pd.DataFrame:
     '''
-    For every subject with both a trajectory file and real-value rows,
-    build one output row per visit in OldHarmonizedMUSEROIs format.
-
-    Walks fold subdirectories (fold_0/, fold_1/, …) inside pred_dir and
-    uses the directory index to populate the fold column.
-
-    Output columns:
-        id, time, fold, y_H_MUSE_Volume_<roi_id>, ..., score_H_MUSE_Volume_<roi_id>, ...
+    Walk all fold_* subdirectories, load arrays, and build the merged DataFrame.
     '''
-    # Collect (fold_number, filepath) pairs from fold<N> subdirectories
     fold_dirs = sorted(
-        [d for d in pred_dir.iterdir() if d.is_dir() and re.match(r'^fold_\d+$', d.name)],
-        key=lambda d: int(d.name[5:])
+        [d for d in model_dir.iterdir()
+         if d.is_dir() and d.name.startswith('fold_')],
+        key=lambda d: int(d.name.split('_')[1])
     )
     if not fold_dirs:
-        raise FileNotFoundError(
-            f'No fold_<N> subdirectories found in {pred_dir}. '
-            'Expected layout: <pred_dir>/fold_0/, fold_1/, …'
-        )
+        raise FileNotFoundError(f'No fold_* subdirs found in {model_dir}')
 
-    fold_files: list[tuple[int, Path]] = []
+    n_rois   = len(roi_ids)
+    y_cols   = [f'y_H_MUSE_Volume_{r}'     for r in roi_ids]
+    sc_cols  = [f'score_H_MUSE_Volume_{r}' for r in roi_ids]
+    out_cols = ['id', 'time', 'fold'] + y_cols + sc_cols
+
+    all_rows = []
+    skipped_no_ref  = 0
+    skipped_no_time = 0
+
     for fold_dir in fold_dirs:
-        fold_num = int(fold_dir.name[5:])
-        for fpath in sorted(fold_dir.glob('trajectory_ptid_*.csv')):
-            fold_files.append((fold_num, fpath))
+        fold_num = int(fold_dir.name.split('_')[1])
+        print(f'  fold_{fold_num}: loading ...')
 
-    print(f'  [{model_label}] {len(fold_dirs)} folds, '
-          f'{len(fold_files)} trajectory files total in {pred_dir}')
+        ptids, targets, preds, mean, std = load_fold(fold_dir, ptid_file)
 
-    # Build MUSE Volume ID column name lists in stable order
-    roi_indices = sorted(roi_id_map.keys())
-    y_cols      = [f'y_H_MUSE_Volume_{roi_id_map[i]}'     for i in roi_indices]
-    score_cols  = [f'score_H_MUSE_Volume_{roi_id_map[i]}' for i in roi_indices]
+        # De-normalize if stats available (MLP)
+        n_cols = targets.shape[1]
+        if mean is not None and std is not None:
+            m = mean[:n_cols].astype(np.float64)
+            s = std[:n_cols].astype(np.float64)
+            targets = targets.astype(np.float64) * s + m
+            preds   = preds.astype(np.float64)   * s + m
+        else:
+            targets = targets.astype(np.float64)
+            preds   = preds.astype(np.float64)
 
-    # Index real values by subject id for fast lookup
-    real_by_subj = {subj: grp for subj, grp in real_df.groupby('id')}
+        # Track visit index per subject within this fold
+        visit_counter: dict[str, int] = defaultdict(int)
 
-    rows = []
-    skipped_no_real  = 0
-    skipped_no_month = 0
+        for row_idx, ptid in enumerate(ptids):
+            ptid = str(ptid)
 
-    for fold, fpath in fold_files:
-        ptid = re.sub(r'^trajectory_ptid_(.*)\.csv$', r'\1', fpath.name)
-
-        if ptid not in real_by_subj:
-            skipped_no_real += 1
-            continue
-
-        trajectories = load_trajectory(fpath)
-        if trajectories is None:
-            continue
-
-        subj_real = real_by_subj[ptid]
-
-        for _, visit in subj_real.iterrows():
-            visit_month = int(round(float(visit['time'])))
-
-            # Check that all ROIs have a prediction at this month
-            missing = [
-                i for i in roi_indices
-                if i not in trajectories
-                or visit_month not in trajectories[i]
-            ]
-            if missing:
-                skipped_no_month += 1
+            if ptid not in ref_times:
+                skipped_no_ref += 1
                 continue
 
-            row = {'id': ptid, 'time': visit['time'], 'fold': fold}
+            visit_idx = visit_counter[ptid]
+            ref_list  = ref_times[ptid]
 
-            # Real values
-            for i, col in zip(roi_indices, y_cols):
-                muse_col = f'y_H_MUSE_Volume_{roi_id_map[i]}'
-                row[col] = visit.get(muse_col, np.nan)
+            if visit_idx >= len(ref_list):
+                skipped_no_time += 1
+                visit_counter[ptid] += 1
+                continue
 
-            # Predicted values
-            for i, col in zip(roi_indices, score_cols):
-                row[col] = trajectories[i][visit_month]
+            time = ref_list[visit_idx]
+            visit_counter[ptid] += 1
 
-            rows.append(row)
+            row = {'id': ptid, 'time': time, 'fold': fold_num}
+            for col_i, (yc, sc) in enumerate(zip(y_cols, sc_cols)):
+                if col_i < n_cols:
+                    row[yc] = targets[row_idx, col_i]
+                    row[sc] = preds[row_idx,   col_i]
+                else:
+                    row[yc] = np.nan
+                    row[sc] = np.nan
 
-    out_df = pd.DataFrame(rows, columns=['id', 'time', 'fold'] + y_cols + score_cols)
+            all_rows.append(row)
 
-    print(f'  [{model_label}] Merged {len(out_df):,} visit rows '
-          f'for {out_df["id"].nunique()} subjects')
-    if skipped_no_real:
-        print(f'  [{model_label}] Skipped {skipped_no_real} subjects '
-              f'with no real-value rows')
-    if skipped_no_month:
-        print(f'  [{model_label}] Skipped {skipped_no_month} visits '
-              f'where trajectory did not cover the visit month')
+        n_kept = sum(1 for r in all_rows if r['fold'] == fold_num)
+        print(f'         {n_kept:,} rows kept')
 
-    return out_df
+    df = pd.DataFrame(all_rows, columns=out_cols)
+
+    if skipped_no_ref:
+        print(f'  Skipped {skipped_no_ref} rows: PTID not in reference CSV')
+    if skipped_no_time:
+        print(f'  Skipped {skipped_no_time} rows: visit index exceeds reference visits')
+
+    return df
 
 
 # =============================================================================
@@ -249,50 +202,46 @@ def merge_model_predictions(
 # =============================================================================
 if __name__ == '__main__':
     print('=' * 70)
-    print('MERGE PREDICTIONS → OldHarmonizedMUSEROIs FORMAT')
+    print('MERGE BASELINE PREDICTIONS → OldHarmonizedMUSEROIs FORMAT')
     print('=' * 70)
 
-    # Validate paths
     for path, label in [
-        (RNNAD_PRED_DIR,   'RNNAD_PRED_DIR'),
-        (MLP_PRED_DIR,     'MLP_PRED_DIR'),
-        (REAL_VALUES_FILE, 'REAL_VALUES_FILE'),
+        (BASELINES_DIR, 'BASELINES_DIR'),
+        (REF_CSV,       'REF_CSV'),
+        (HMUSE_FILE,    'HMUSE_FILE'),
     ]:
         if not path.exists():
             sys.exit(f'ERROR: {label} not found: {path}')
 
-    print('\n[1/4] Loading hmuse ROI map...')
-    # Infer n_rois from first trajectory file found inside any fold subdir
-    sample_files = list(RNNAD_PRED_DIR.glob('fold_*/trajectory_ptid_*.csv'))
-    if not sample_files:
-        sample_files = list(MLP_PRED_DIR.glob('fold_*/trajectory_ptid_*.csv'))
-    sample_df = pd.read_csv(str(sample_files[0]))
-    n_rois    = int(sample_df['ROI_Index'].max()) + 1
-    print(f'  Detected {n_rois} ROIs from sample trajectory file')
+    # Load reference times from OldHarmonizedMUSEROIs.csv
+    print('\n[1/4] Loading reference times ...')
+    ref_times = load_reference_times(REF_CSV)
 
-    roi_id_map = build_roi_id_map(HMUSE_FILE, n_rois)
+    # Infer n_rois from first available fold
+    sample_npy = next(BASELINES_DIR.glob('*/fold_0/test_predictions.npy'))
+    n_rois = np.load(str(sample_npy), mmap_mode='r').shape[1]
+    print(f'\n[2/4] Detected {n_rois} ROI columns from sample array')
 
-    print('\n[2/4] Loading real observed brain volumes...')
-    real_df = load_real_values(REAL_VALUES_FILE)
+    roi_ids = load_roi_ids(HMUSE_FILE, n_rois)
 
-    print('\n[3/4] Merging RNN-AD predictions...')
-    rnnad_df = merge_model_predictions(
-        RNNAD_PRED_DIR, real_df, roi_id_map, 'RNN-AD'
+    print('\n[3/4] Processing RNN ...')
+    rnn_df = build_merged_df(
+        BASELINES_DIR / 'rnn', 'subject_ids.json', ref_times, roi_ids
     )
-    rnnad_df.to_csv(str(OUT_RNNAD), index=False)
-    print(f'  Saved → {OUT_RNNAD}')
+    rnn_df.to_csv(str(OUT_RNN), index=False)
+    print(f'  Saved → {OUT_RNN}  '
+          f'({len(rnn_df):,} rows, {rnn_df["id"].nunique()} subjects, '
+          f'{rnn_df["fold"].nunique()} folds)')
 
-    print('\n[4/4] Merging MLP predictions...')
-    mlp_df = merge_model_predictions(
-        MLP_PRED_DIR, real_df, roi_id_map, 'MLP'
+    print('\n[4/4] Processing MLP ...')
+    mlp_df = build_merged_df(
+        BASELINES_DIR / 'mlp', 'test_ptids.json', ref_times, roi_ids
     )
     mlp_df.to_csv(str(OUT_MLP), index=False)
-    print(f'  Saved → {OUT_MLP}')
+    print(f'  Saved → {OUT_MLP}  '
+          f'({len(mlp_df):,} rows, {mlp_df["id"].nunique()} subjects, '
+          f'{mlp_df["fold"].nunique()} folds)')
 
     print('\n' + '=' * 70)
     print('DONE')
-    print(f'  RNN-AD : {OUT_RNNAD}  ({len(rnnad_df):,} rows, '
-          f'{rnnad_df["id"].nunique()} subjects)')
-    print(f'  MLP    : {OUT_MLP}  ({len(mlp_df):,} rows, '
-          f'{mlp_df["id"].nunique()} subjects)')
     print('=' * 70)
