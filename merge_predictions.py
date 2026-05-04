@@ -2,9 +2,12 @@
 Merge per-subject trajectory prediction files (RNN-AD and MLP) with real
 observed brain volumes into OldHarmonizedMUSEROIs format:
 
-    id, time, y_H_MUSE_Volume_<roi>, ..., score_H_MUSE_Volume_<roi>, ...
+    id, time, fold, y_H_MUSE_Volume_<roi>, ..., score_H_MUSE_Volume_<roi>, ...
 
-Input prediction files (trajectory_ptid_*.csv):
+Input prediction files:
+    Supported filename patterns (fold is parsed from the name when present):
+        trajectory_ptid_<id>_fold<N>.csv   →  fold = N
+        trajectory_ptid_<id>.csv           →  fold = NaN
     Rows  : one per ROI (0-indexed in ROI_Index column, 145 total)
     Cols  : Month_0, Month_1, ..., Month_N  (integer month offsets from baseline)
 
@@ -138,6 +141,25 @@ def load_trajectory(fpath: Path) -> dict | None:
     return trajectories
 
 
+def parse_ptid_and_fold(filename: str) -> tuple[str, float]:
+    '''
+    Extract subject ID and fold number from a trajectory filename.
+
+    Supported patterns:
+        trajectory_ptid_<id>_fold<N>.csv  →  (id, N)
+        trajectory_ptid_<id>.csv          →  (id, nan)
+    '''
+    stem = re.sub(r'\.csv$', '', filename)
+    fold_match = re.search(r'_fold(\d+)$', stem)
+    if fold_match:
+        fold = int(fold_match.group(1))
+        ptid = re.sub(r'^trajectory_ptid_', '', stem[:fold_match.start()])
+    else:
+        fold = float('nan')
+        ptid = re.sub(r'^trajectory_ptid_', '', stem)
+    return ptid, fold
+
+
 def merge_model_predictions(
     pred_dir: Path,
     real_df: pd.DataFrame,
@@ -149,7 +171,7 @@ def merge_model_predictions(
     build one output row per visit in OldHarmonizedMUSEROIs format.
 
     Output columns:
-        id, time, y_H_MUSE_Volume_<roi_id>, ..., score_H_MUSE_Volume_<roi_id>, ...
+        id, time, fold, y_H_MUSE_Volume_<roi_id>, ..., score_H_MUSE_Volume_<roi_id>, ...
     '''
     csv_files = sorted(pred_dir.glob('trajectory_ptid_*.csv'))
     if not csv_files:
@@ -171,7 +193,7 @@ def merge_model_predictions(
     skipped_no_month = 0
 
     for fpath in csv_files:
-        ptid = re.sub(r'^trajectory_ptid_(.*)\.csv$', r'\1', fpath.name)
+        ptid, fold = parse_ptid_and_fold(fpath.name)
 
         if ptid not in real_by_subj:
             skipped_no_real += 1
@@ -196,7 +218,7 @@ def merge_model_predictions(
                 skipped_no_month += 1
                 continue
 
-            row = {'id': ptid, 'time': visit['time']}
+            row = {'id': ptid, 'time': visit['time'], 'fold': fold}
 
             # Real values
             for i, col in zip(roi_indices, y_cols):
@@ -209,7 +231,7 @@ def merge_model_predictions(
 
             rows.append(row)
 
-    out_df = pd.DataFrame(rows, columns=['id', 'time'] + y_cols + score_cols)
+    out_df = pd.DataFrame(rows, columns=['id', 'time', 'fold'] + y_cols + score_cols)
 
     print(f'  [{model_label}] Merged {len(out_df):,} visit rows '
           f'for {out_df["id"].nunique()} subjects')
