@@ -4,10 +4,11 @@ observed brain volumes into OldHarmonizedMUSEROIs format:
 
     id, time, fold, y_H_MUSE_Volume_<roi>, ..., score_H_MUSE_Volume_<roi>, ...
 
-Input prediction files:
-    Supported filename patterns (fold is parsed from the name when present):
-        trajectory_ptid_<id>_fold<N>.csv   →  fold = N
-        trajectory_ptid_<id>.csv           →  fold = NaN
+Input prediction directory layout:
+    <pred_dir>/
+        fold0/trajectory_ptid_*.csv
+        fold1/trajectory_ptid_*.csv
+        ...
     Rows  : one per ROI (0-indexed in ROI_Index column, 145 total)
     Cols  : Month_0, Month_1, ..., Month_N  (integer month offsets from baseline)
 
@@ -141,25 +142,6 @@ def load_trajectory(fpath: Path) -> dict | None:
     return trajectories
 
 
-def parse_ptid_and_fold(filename: str) -> tuple[str, float]:
-    '''
-    Extract subject ID and fold number from a trajectory filename.
-
-    Supported patterns:
-        trajectory_ptid_<id>_fold<N>.csv  →  (id, N)
-        trajectory_ptid_<id>.csv          →  (id, nan)
-    '''
-    stem = re.sub(r'\.csv$', '', filename)
-    fold_match = re.search(r'_fold(\d+)$', stem)
-    if fold_match:
-        fold = int(fold_match.group(1))
-        ptid = re.sub(r'^trajectory_ptid_', '', stem[:fold_match.start()])
-    else:
-        fold = float('nan')
-        ptid = re.sub(r'^trajectory_ptid_', '', stem)
-    return ptid, fold
-
-
 def merge_model_predictions(
     pred_dir: Path,
     real_df: pd.DataFrame,
@@ -170,15 +152,31 @@ def merge_model_predictions(
     For every subject with both a trajectory file and real-value rows,
     build one output row per visit in OldHarmonizedMUSEROIs format.
 
+    Walks fold subdirectories (fold0/, fold1/, …) inside pred_dir and
+    uses the directory name to populate the fold column.
+
     Output columns:
         id, time, fold, y_H_MUSE_Volume_<roi_id>, ..., score_H_MUSE_Volume_<roi_id>, ...
     '''
-    csv_files = sorted(pred_dir.glob('trajectory_ptid_*.csv'))
-    if not csv_files:
+    # Collect (fold_number, filepath) pairs from fold<N> subdirectories
+    fold_dirs = sorted(
+        [d for d in pred_dir.iterdir() if d.is_dir() and re.match(r'^fold\d+$', d.name)],
+        key=lambda d: int(d.name[4:])
+    )
+    if not fold_dirs:
         raise FileNotFoundError(
-            f'No trajectory_ptid_*.csv files found in {pred_dir}'
+            f'No fold<N> subdirectories found in {pred_dir}. '
+            'Expected layout: <pred_dir>/fold0/, fold1/, …'
         )
-    print(f'  [{model_label}] Found {len(csv_files)} trajectory files in {pred_dir}')
+
+    fold_files: list[tuple[int, Path]] = []
+    for fold_dir in fold_dirs:
+        fold_num = int(fold_dir.name[4:])
+        for fpath in sorted(fold_dir.glob('trajectory_ptid_*.csv')):
+            fold_files.append((fold_num, fpath))
+
+    print(f'  [{model_label}] {len(fold_dirs)} folds, '
+          f'{len(fold_files)} trajectory files total in {pred_dir}')
 
     # Build MUSE Volume ID column name lists in stable order
     roi_indices = sorted(roi_id_map.keys())
@@ -192,8 +190,8 @@ def merge_model_predictions(
     skipped_no_real  = 0
     skipped_no_month = 0
 
-    for fpath in csv_files:
-        ptid, fold = parse_ptid_and_fold(fpath.name)
+    for fold, fpath in fold_files:
+        ptid = re.sub(r'^trajectory_ptid_(.*)\.csv$', r'\1', fpath.name)
 
         if ptid not in real_by_subj:
             skipped_no_real += 1
@@ -263,10 +261,10 @@ if __name__ == '__main__':
             sys.exit(f'ERROR: {label} not found: {path}')
 
     print('\n[1/4] Loading hmuse ROI map...')
-    # Infer n_rois from first trajectory file in either directory
-    sample_files = list(RNNAD_PRED_DIR.glob('trajectory_ptid_*.csv'))
+    # Infer n_rois from first trajectory file found inside any fold subdir
+    sample_files = list(RNNAD_PRED_DIR.glob('fold*/trajectory_ptid_*.csv'))
     if not sample_files:
-        sample_files = list(MLP_PRED_DIR.glob('trajectory_ptid_*.csv'))
+        sample_files = list(MLP_PRED_DIR.glob('fold*/trajectory_ptid_*.csv'))
     sample_df = pd.read_csv(str(sample_files[0]))
     n_rois    = int(sample_df['ROI_Index'].max()) + 1
     print(f'  Detected {n_rois} ROIs from sample trajectory file')
