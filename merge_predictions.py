@@ -5,10 +5,11 @@ observed brain volumes into OldHarmonizedMUSEROIs format:
     id, time, fold, y_H_MUSE_Volume_<roi>, ..., score_H_MUSE_Volume_<roi>, ...
 
 Input prediction directory layout:
-    <pred_dir>/
-        fold0/trajectory_ptid_*.csv
-        fold1/trajectory_ptid_*.csv
-        ...
+    baselines/
+        rnn/fold_0/trajectory_ptid_*.csv
+            fold_1/trajectory_ptid_*.csv  …
+        mlp/fold_0/trajectory_ptid_*.csv
+            fold_1/trajectory_ptid_*.csv  …
     Rows  : one per ROI (0-indexed in ROI_Index column, 145 total)
     Cols  : Month_0, Month_1, ..., Month_N  (integer month offsets from baseline)
 
@@ -40,9 +41,9 @@ warnings.filterwarnings('ignore')
 # CONFIGURATION — edit these paths before running
 # =============================================================================
 
-# Directory with trajectory_ptid_*.csv files for each model
-RNNAD_PRED_DIR = Path('./predictions_rnnad')
-MLP_PRED_DIR   = Path('./predictions_mlp')
+# Directory with fold_<N>/ subdirectories for each model
+RNNAD_PRED_DIR = Path('./baselines/rnn')
+MLP_PRED_DIR   = Path('./baselines/mlp')
 
 # CSV with real observed brain volumes at each visit.
 # Required columns: id (or PTID), time (months from baseline),
@@ -152,26 +153,26 @@ def merge_model_predictions(
     For every subject with both a trajectory file and real-value rows,
     build one output row per visit in OldHarmonizedMUSEROIs format.
 
-    Walks fold subdirectories (fold0/, fold1/, …) inside pred_dir and
-    uses the directory name to populate the fold column.
+    Walks fold subdirectories (fold_0/, fold_1/, …) inside pred_dir and
+    uses the directory index to populate the fold column.
 
     Output columns:
         id, time, fold, y_H_MUSE_Volume_<roi_id>, ..., score_H_MUSE_Volume_<roi_id>, ...
     '''
     # Collect (fold_number, filepath) pairs from fold<N> subdirectories
     fold_dirs = sorted(
-        [d for d in pred_dir.iterdir() if d.is_dir() and re.match(r'^fold\d+$', d.name)],
-        key=lambda d: int(d.name[4:])
+        [d for d in pred_dir.iterdir() if d.is_dir() and re.match(r'^fold_\d+$', d.name)],
+        key=lambda d: int(d.name[5:])
     )
     if not fold_dirs:
         raise FileNotFoundError(
-            f'No fold<N> subdirectories found in {pred_dir}. '
-            'Expected layout: <pred_dir>/fold0/, fold1/, …'
+            f'No fold_<N> subdirectories found in {pred_dir}. '
+            'Expected layout: <pred_dir>/fold_0/, fold_1/, …'
         )
 
     fold_files: list[tuple[int, Path]] = []
     for fold_dir in fold_dirs:
-        fold_num = int(fold_dir.name[4:])
+        fold_num = int(fold_dir.name[5:])
         for fpath in sorted(fold_dir.glob('trajectory_ptid_*.csv')):
             fold_files.append((fold_num, fpath))
 
@@ -262,9 +263,9 @@ if __name__ == '__main__':
 
     print('\n[1/4] Loading hmuse ROI map...')
     # Infer n_rois from first trajectory file found inside any fold subdir
-    sample_files = list(RNNAD_PRED_DIR.glob('fold*/trajectory_ptid_*.csv'))
+    sample_files = list(RNNAD_PRED_DIR.glob('fold_*/trajectory_ptid_*.csv'))
     if not sample_files:
-        sample_files = list(MLP_PRED_DIR.glob('fold*/trajectory_ptid_*.csv'))
+        sample_files = list(MLP_PRED_DIR.glob('fold_*/trajectory_ptid_*.csv'))
     sample_df = pd.read_csv(str(sample_files[0]))
     n_rois    = int(sample_df['ROI_Index'].max()) + 1
     print(f'  Detected {n_rois} ROIs from sample trajectory file')
